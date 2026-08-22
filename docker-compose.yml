@@ -3,10 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: telegram_tools
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
       - TG_API_ID=${TG_API_ID:?TG_API_ID is required}
       - TG_API_HASH=${TG_API_HASH:?TG_API_HASH is required}
