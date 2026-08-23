@@ -5,7 +5,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import get_db
-from backend.app.core.security import get_current_user
+from backend.app.models.account import Account, AccountStatus
 from backend.app.models.log import TriggerLog
 from backend.app.schemas.log import LogListResponse, TriggerLogResponse
 
@@ -48,16 +48,25 @@ async def list_logs(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     rule_id: int | None = Query(default=None, gt=0),
-    account_id: int | None = Query(default=None, gt=0),
     query: str | None = Query(default=None, max_length=500),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> LogListResponse:
     filters = []
     if rule_id is not None:
         filters.append(TriggerLog.rule_id == rule_id)
-    if account_id is not None:
-        filters.append(TriggerLog.account_id == account_id)
+    account_result = await db.execute(
+        select(Account.id)
+        .where(
+            Account.status == AccountStatus.CONNECTED,
+            Account.is_active.is_(True),
+        )
+        .order_by(Account.id.desc())
+        .limit(1)
+    )
+    account_id = account_result.scalar_one_or_none()
+    if account_id is None:
+        return LogListResponse(total=0, page=page, page_size=page_size, logs=[])
+    filters.append(TriggerLog.account_id == account_id)
     if query and (search_term := query.strip()):
         pattern = f"%{search_term}%"
         filters.append(
@@ -93,7 +102,6 @@ async def list_logs(
 @router.delete("/clear")
 async def clear_logs(
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> dict[str, str]:
     await db.execute(delete(TriggerLog))
     await db.commit()

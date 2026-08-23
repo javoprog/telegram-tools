@@ -1,767 +1,368 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
 import {
-  Sliders, Plus, Play, Pause, Trash2, Edit3, Tag, MessageSquare,
-  ArrowRight, ShieldAlert, Globe
+  BellRing,
+  Check,
+  ChevronDown,
+  CirclePause,
+  CirclePlay,
+  Clock3,
+  Pencil,
+  Plus,
+  SearchCheck,
+  Tag,
+  Trash2,
+  X,
 } from 'lucide-react';
+
 import { api, getErrorMessage } from '../api/client';
-import type { Account, ActionType, MatchMode, Rule, RuleCreate } from '../types';
+import { ChatPickerModal } from '../components/ChatPickerModal';
 import { Modal } from '../components/Modal';
+import type { Account, ChatDialog, MatchMode, Rule, RuleCreate } from '../types';
 
 interface RulesPageProps {
-  accounts: Account[];
-  selectedAccountId: number | null;
+  account: Account | null;
 }
 
-const ACTION_OPTIONS: { id: ActionType; label: string }[] = [
-  { id: 'forward_alert', label: 'Переслать отчёт' },
-  { id: 'auto_reply', label: 'Автоответ' },
-  { id: 'both', label: 'Отчёт + ответ' },
-  { id: 'webhook', label: 'Webhook POST' },
-];
+interface RuleForm {
+  name: string;
+  description: string;
+  sourceMode: 'all' | 'selected';
+  sourceIds: string[];
+  triggerWords: string[];
+  excludeWords: string[];
+  matchMode: MatchMode;
+  caseSensitive: boolean;
+  targetId: string;
+  autoReply: boolean;
+  replyTemplate: string;
+  replyDelaySeconds: number;
+  cooldownSeconds: number;
+}
 
-const ACTION_LABELS: Record<ActionType, string> = {
-  forward_alert: 'Отчёт',
-  auto_reply: 'Автоответ',
-  both: 'Отчёт + ответ',
-  webhook: 'Webhook',
+const emptyForm = (): RuleForm => ({
+  name: '',
+  description: '',
+  sourceMode: 'all',
+  sourceIds: [],
+  triggerWords: [],
+  excludeWords: [],
+  matchMode: 'any',
+  caseSensitive: false,
+  targetId: '',
+  autoReply: false,
+  replyTemplate: 'Здравствуйте, {sender_name}! Спасибо за сообщение.',
+  replyDelaySeconds: 2,
+  cooldownSeconds: 60,
+});
+
+const formFromRule = (rule: Rule): RuleForm => ({
+  name: rule.name,
+  description: rule.description || '',
+  sourceMode: rule.source_chat_ids.includes('*') ? 'all' : 'selected',
+  sourceIds: rule.source_chat_ids.includes('*') ? [] : rule.source_chat_ids,
+  triggerWords: rule.trigger_words,
+  excludeWords: rule.exclude_words,
+  matchMode: rule.match_mode,
+  caseSensitive: rule.case_sensitive,
+  targetId: rule.target_chat_id || '',
+  autoReply: rule.action_type === 'auto_reply' || rule.action_type === 'both',
+  replyTemplate: rule.reply_template || 'Здравствуйте, {sender_name}! Спасибо за сообщение.',
+  replyDelaySeconds: rule.reply_delay_seconds,
+  cooldownSeconds: rule.cooldown_seconds,
+});
+
+interface TagsInputProps {
+  values: string[];
+  onChange: (values: string[]) => void;
+  placeholder: string;
+  tone?: 'blue' | 'red';
+}
+
+const TagsInput = ({ values, onChange, placeholder, tone = 'blue' }: TagsInputProps) => {
+  const [draft, setDraft] = useState('');
+
+  const addValues = (raw: string) => {
+    const additions = raw.split(',').map((item) => item.trim()).filter(Boolean);
+    if (additions.length === 0) return;
+    onChange(Array.from(new Set([...values, ...additions])));
+    setDraft('');
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      addValues(draft);
+    }
+    if (event.key === 'Backspace' && !draft && values.length > 0) {
+      onChange(values.slice(0, -1));
+    }
+  };
+
+  return (
+    <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 focus-within:border-[#2481CC] focus-within:ring-2 focus-within:ring-[#2481CC]/10">
+      {values.map((value) => (
+        <span key={value} className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold ${tone === 'red' ? 'bg-rose-50 text-rose-700' : 'bg-[#E7F3FC] text-[#2481CC]'}`}>
+          {value}
+          <button type="button" onClick={() => onChange(values.filter((item) => item !== value))} className="rounded p-0.5 hover:bg-black/5" aria-label={`Удалить ${value}`}>
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      ))}
+      <input
+        value={draft}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (value.includes(',')) addValues(value);
+          else setDraft(value);
+        }}
+        onKeyDown={handleKeyDown}
+        onBlur={() => addValues(draft)}
+        placeholder={values.length === 0 ? placeholder : 'Добавить ещё…'}
+        className="min-w-[180px] flex-1 border-0 bg-transparent py-1 text-sm text-zinc-900 placeholder-zinc-400 outline-none ring-0"
+      />
+    </div>
+  );
 };
 
-export const RulesPage = ({ accounts, selectedAccountId }: RulesPageProps) => {
+export const RulesPage = ({ account }: RulesPageProps) => {
   const [rules, setRules] = useState<Rule[]>([]);
+  const [dialogs, setDialogs] = useState<ChatDialog[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editingRule, setEditingRule] = useState<Rule | null>(null);
+  const [form, setForm] = useState<RuleForm>(emptyForm);
+  const [formOpen, setFormOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  // Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingRuleId, setEditingRuleId] = useState<number | null>(null);
-
-  // Form fields
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [sourceChats, setSourceChats] = useState<string>('*');
-  const [targetChatId, setTargetChatId] = useState('');
-
-  const [triggerInput, setTriggerInput] = useState('');
-  const [triggerWords, setTriggerWords] = useState<string[]>([]);
-
-  const [excludeInput, setExcludeInput] = useState('');
-  const [excludeWords, setExcludeWords] = useState<string[]>([]);
-
-  const [matchMode, setMatchMode] = useState<MatchMode>('any');
-  const [caseSensitive, setCaseSensitive] = useState(false);
-  const [actionType, setActionType] = useState<ActionType>('forward_alert');
-  const [alertTemplate, setAlertTemplate] = useState('');
-  const [replyTemplate, setReplyTemplate] = useState('');
-  const [replyDelaySeconds, setReplyDelaySeconds] = useState(2);
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [cooldownSeconds, setCooldownSeconds] = useState(0);
-
-  const fetchRules = useCallback(async () => {
-    if (!selectedAccountId) {
+  const refresh = useCallback(async () => {
+    if (!account) {
       setRules([]);
+      setDialogs([]);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getRules({ account_id: selectedAccountId });
-      setRules(data);
+      const [ruleItems, dialogResult] = await Promise.all([api.getRules(), api.getDialogs()]);
+      setRules(ruleItems);
+      setDialogs(dialogResult.chats);
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Не удалось загрузить правила'));
+      setError(getErrorMessage(requestError, 'Не удалось загрузить данные Telegram'));
     } finally {
       setLoading(false);
     }
-  }, [selectedAccountId]);
+  }, [account]);
 
   useEffect(() => {
-    void fetchRules();
-  }, [fetchRules]);
+    void refresh();
+  }, [refresh]);
 
-  const openCreateModal = () => {
-    if (!selectedAccountId) return;
-    setEditingRuleId(null);
-    setName('');
-    setDescription('');
-    setSourceChats('*');
-    setTargetChatId('');
-    setTriggerWords([]);
-    setTriggerInput('');
-    setExcludeWords([]);
-    setExcludeInput('');
-    setMatchMode('any');
-    setCaseSensitive(false);
-    setActionType('forward_alert');
-    setAlertTemplate('');
-    setReplyTemplate('');
-    setReplyDelaySeconds(2);
-    setWebhookUrl('');
-    setCooldownSeconds(0);
-    setFormError(null);
-    setIsModalOpen(true);
+  const dialogById = useMemo(() => new Map(dialogs.map((chat) => [chat.id, chat])), [dialogs]);
+
+  const openCreate = () => {
+    setError(null);
+    setEditingRule(null);
+    setForm(emptyForm());
+    setAdvancedOpen(false);
+    setFormOpen(true);
   };
 
-  const openEditModal = (rule: Rule) => {
-    setEditingRuleId(rule.id);
-    setName(rule.name);
-    setDescription(rule.description || '');
-    setSourceChats(rule.source_chat_ids.join(', ') || '*');
-    setTargetChatId(rule.target_chat_id || '');
-    setTriggerWords(rule.trigger_words || []);
-    setTriggerInput('');
-    setExcludeWords(rule.exclude_words || []);
-    setExcludeInput('');
-    setMatchMode(rule.match_mode);
-    setCaseSensitive(rule.case_sensitive);
-    setActionType(rule.action_type);
-    setAlertTemplate(rule.alert_template || '');
-    setReplyTemplate(rule.reply_template || '');
-    setReplyDelaySeconds(rule.reply_delay_seconds ?? 2);
-    setWebhookUrl(rule.webhook_url || '');
-    setCooldownSeconds(rule.cooldown_seconds || 0);
-    setFormError(null);
-    setIsModalOpen(true);
+  const openEdit = (rule: Rule) => {
+    setError(null);
+    setEditingRule(rule);
+    setForm(formFromRule(rule));
+    setAdvancedOpen(rule.exclude_words.length > 0 || rule.case_sensitive || rule.match_mode !== 'any');
+    setFormOpen(true);
   };
 
-  const handleAddTrigger = () => {
-    if (triggerInput.trim()) {
-      const words = triggerInput.split(',').map((w) => w.trim()).filter(Boolean);
-      setTriggerWords((prev) => Array.from(new Set([...prev, ...words])));
-      setTriggerInput('');
-    }
+  const updateForm = <K extends keyof RuleForm>(key: K, value: RuleForm[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const handleRemoveTrigger = (word: string) => {
-    setTriggerWords((prev) => prev.filter((w) => w !== word));
-  };
-
-  const handleAddExclude = () => {
-    if (excludeInput.trim()) {
-      const words = excludeInput.split(',').map((w) => w.trim()).filter(Boolean);
-      setExcludeWords((prev) => Array.from(new Set([...prev, ...words])));
-      setExcludeInput('');
-    }
-  };
-
-  const handleRemoveExclude = (word: string) => {
-    setExcludeWords((prev) => prev.filter((w) => w !== word));
-  };
-
-  const handleSaveRule = async (event: FormEvent) => {
+  const saveRule = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selectedAccountId) {
-      setFormError('Сначала подключите и выберите Telegram‑аккаунт.');
+    setError(null);
+    if (form.sourceMode === 'selected' && form.sourceIds.length === 0) {
+      setError('Выберите хотя бы один чат, где нужно искать сообщения.');
+      return;
+    }
+    if (form.triggerWords.length === 0) {
+      setError('Добавьте хотя бы одно ключевое слово.');
+      return;
+    }
+    if (!form.targetId) {
+      setError('Выберите чат, куда отправлять уведомления.');
+      return;
+    }
+    if (form.autoReply && !form.replyTemplate.trim()) {
+      setError('Введите текст автоответа или выключите автоответчик.');
       return;
     }
 
-    const pendingTriggers = triggerInput.split(',').map((word) => word.trim()).filter(Boolean);
-    const allTriggerWords = Array.from(new Set([...triggerWords, ...pendingTriggers]));
-    const pendingExcludes = excludeInput.split(',').map((word) => word.trim()).filter(Boolean);
-    const allExcludeWords = Array.from(new Set([...excludeWords, ...pendingExcludes]));
-    if (allTriggerWords.length === 0) {
-      setFormError('Добавьте хотя бы одно триггер‑слово или регулярное выражение.');
-      return;
-    }
-    if ((actionType === 'forward_alert' || actionType === 'both') && !targetChatId.trim()) {
-      setFormError('Для отправки отчёта укажите ID целевого чата.');
-      return;
-    }
-    if ((actionType === 'auto_reply' || actionType === 'both') && !replyTemplate.trim()) {
-      setFormError('Для автоответа укажите текст ответа.');
-      return;
-    }
-    if (actionType === 'webhook' && !webhookUrl.trim()) {
-      setFormError('Для Webhook POST укажите URL.');
-      return;
-    }
-
-    // Parse source chats
-    const parsedSources = sourceChats
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const sharedPayload: Omit<RuleCreate, 'account_id'> = {
-      name: name.trim(),
-      description: description.trim() || null,
-      source_chat_ids: parsedSources.length > 0 ? parsedSources : ['*'],
-      target_chat_id: targetChatId.trim() || null,
-      trigger_words: allTriggerWords,
-      exclude_words: allExcludeWords,
-      match_mode: matchMode,
-      case_sensitive: caseSensitive,
-      action_type: actionType,
-      alert_template: alertTemplate.trim() || null,
-      reply_template: replyTemplate.trim() || null,
-      reply_delay_seconds: replyDelaySeconds,
-      webhook_url: webhookUrl.trim() || null,
-      cooldown_seconds: cooldownSeconds,
-      is_active: editingRuleId
-        ? rules.find((rule) => rule.id === editingRuleId)?.is_active ?? true
-        : true,
+    const payload: RuleCreate = {
+      name: form.name.trim(),
+      description: form.description.trim() || null,
+      is_active: editingRule?.is_active ?? true,
+      source_chat_ids: form.sourceMode === 'all' ? ['*'] : form.sourceIds,
+      target_chat_id: form.targetId,
+      trigger_words: form.triggerWords,
+      exclude_words: form.excludeWords,
+      match_mode: form.matchMode,
+      case_sensitive: form.caseSensitive,
+      action_type: form.autoReply ? 'both' : 'forward_alert',
+      alert_template: null,
+      reply_template: form.autoReply ? form.replyTemplate.trim() : null,
+      reply_delay_seconds: form.replyDelaySeconds,
+      webhook_url: null,
+      cooldown_seconds: form.cooldownSeconds,
     };
 
     setSaving(true);
-    setFormError(null);
     try {
-      if (editingRuleId) {
-        await api.updateRule(editingRuleId, sharedPayload);
-      } else {
-        await api.createRule({ ...sharedPayload, account_id: selectedAccountId });
-      }
-      setIsModalOpen(false);
-      await fetchRules();
+      if (editingRule) await api.updateRule(editingRule.id, payload);
+      else await api.createRule(payload);
+      setFormOpen(false);
+      await refresh();
     } catch (requestError) {
-      setFormError(getErrorMessage(requestError, 'Ошибка сохранения правила'));
+      setError(getErrorMessage(requestError, 'Не удалось сохранить правило'));
     } finally {
       setSaving(false);
     }
   };
 
-  const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
-
-  const handleToggle = async (ruleId: number) => {
+  const toggleRule = async (rule: Rule) => {
     try {
-      await api.toggleRule(ruleId);
-      setRules((prev) =>
-        prev.map((r) => (r.id === ruleId ? { ...r, is_active: !r.is_active } : r))
-      );
+      const updated = await api.toggleRule(rule.id);
+      setRules((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Ошибка переключения правила'));
+      setError(getErrorMessage(requestError, 'Не удалось изменить статус правила'));
     }
   };
 
-  const handleDelete = async (ruleId: number) => {
-    if (!window.confirm('Удалить это правило мониторинга?')) return;
+  const deleteRule = async (rule: Rule) => {
+    if (!window.confirm(`Удалить правило «${rule.name}»?`)) return;
     try {
-      await api.deleteRule(ruleId);
-      setRules((prev) => prev.filter((r) => r.id !== ruleId));
+      await api.deleteRule(rule.id);
+      setRules((current) => current.filter((item) => item.id !== rule.id));
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Ошибка удаления'));
+      setError(getErrorMessage(requestError, 'Не удалось удалить правило'));
     }
   };
+
+  const selectedSourceChats = form.sourceIds.map((id) => dialogById.get(id)).filter((chat): chat is ChatDialog => Boolean(chat));
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <Sliders className="w-6 h-6 text-[#24A1DE]" />
-            Правила мониторинга и триггеры
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-zinc-900">
+            <SearchCheck className="h-6 w-6 text-[#2481CC]" /> Мои правила
           </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Настройте ключевые слова, фильтры и действия для пересылки сообщений или автоответов.
-          </p>
-          {selectedAccount && (
-            <p className="text-xs text-[#24A1DE] mt-2">
-              Аккаунт: {selectedAccount.first_name || selectedAccount.phone_number}
-            </p>
-          )}
+          <p className="mt-1 text-sm text-zinc-500">Укажите, что искать — Telegram Tools сам заметит сообщение и пришлёт уведомление.</p>
         </div>
-
-        <button
-          onClick={openCreateModal}
-          disabled={!selectedAccountId}
-          className="flex items-center justify-center gap-2 px-5 py-2.5 bg-[#24A1DE] hover:bg-[#2090c7] disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-medium text-sm transition-all shadow-lg shadow-[#24A1DE]/20"
-        >
-          <Plus className="w-4 h-4" />
-          Создать правило
+        <button type="button" onClick={openCreate} disabled={!account} className="flex items-center justify-center gap-2 rounded-xl bg-[#2481CC] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#1C72B8] disabled:cursor-not-allowed disabled:opacity-45">
+          <Plus className="h-4 w-4" /> Создать правило
         </button>
       </div>
 
-      {error && (
-        <div className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 rounded-xl text-sm">
-          {error}
-        </div>
-      )}
+      {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
 
-      {!selectedAccountId ? (
-        <div className="bg-[#17212B] border border-[#242F3D] rounded-2xl p-12 text-center text-slate-400">
-          <Sliders className="w-12 h-12 mx-auto mb-3 text-slate-600" />
-          <h3 className="text-lg font-semibold text-white">Telegram‑аккаунт не подключён</h3>
-          <p className="text-sm mt-1">Подключите аккаунт во вкладке «Telegram аккаунт», затем создайте правило.</p>
+      {!account ? (
+        <div className="rounded-2xl border border-zinc-200 bg-white px-6 py-14 text-center shadow-sm">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#E7F3FC] text-[#2481CC]"><BellRing className="h-7 w-7" /></div>
+          <h2 className="mt-4 text-lg font-bold text-zinc-900">Сначала войдите в Telegram</h2>
+          <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">После подключения номера здесь появятся ваши чаты и можно будет создать первое правило.</p>
         </div>
       ) : loading && rules.length === 0 ? (
-        <div className="text-center py-16 text-slate-500">Загрузка правил...</div>
+        <div className="py-16 text-center text-sm text-zinc-500">Загружаем правила и чаты…</div>
       ) : rules.length === 0 ? (
-        <div className="bg-[#17212B] border border-[#242F3D] rounded-2xl p-12 text-center text-slate-400">
-          <Sliders className="w-12 h-12 mx-auto mb-3 text-slate-600" />
-          <h3 className="text-lg font-semibold text-white">Правил пока нет</h3>
-          <p className="text-sm mt-1 max-w-md mx-auto">
-            Создайте первое правило, чтобы бот начал слушать сообщения в группах и уведомлять вас при совпадении ключевых слов.
-          </p>
-          <button
-            onClick={openCreateModal}
-            className="mt-5 inline-flex items-center gap-2 px-4 py-2 bg-[#24A1DE] text-white rounded-xl text-sm font-medium"
-          >
-            <Plus className="w-4 h-4" />
-            Добавить первое правило
-          </button>
+        <div className="rounded-2xl border border-dashed border-zinc-300 bg-white px-6 py-14 text-center">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#E7F3FC] text-[#2481CC]"><Tag className="h-7 w-7" /></div>
+          <h2 className="mt-4 text-lg font-bold text-zinc-900">Правил пока нет</h2>
+          <p className="mt-1 text-sm text-zinc-500">Создайте правило за несколько простых шагов — без технических настроек.</p>
+          <button type="button" onClick={openCreate} className="mt-5 rounded-xl bg-[#2481CC] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1C72B8]">Создать первое правило</button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4">
-          {rules.map((rule) => (
-            <div
-              key={rule.id}
-              className={`bg-[#17212B] border transition-all rounded-2xl p-5 shadow-sm ${
-                rule.is_active ? 'border-[#242F3D] hover:border-[#2B5278]' : 'border-[#242F3D]/50 opacity-60'
-              }`}
-            >
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                {/* Rule title & tags */}
-                <div className="space-y-3 flex-1">
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => handleToggle(rule.id)}
-                      className={`p-2 rounded-xl transition-colors ${
-                        rule.is_active
-                          ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30'
-                          : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
-                      }`}
-                      title={rule.is_active ? 'Приостановить правило' : 'Запустить правило'}
-                    >
-                      {rule.is_active ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-                    </button>
-
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-base font-bold text-white">{rule.name}</h3>
-                        <span
-                          className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${
-                            rule.is_active
-                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                              : 'bg-slate-700/30 text-slate-400 border-slate-700'
-                          }`}
-                        >
-                          {rule.is_active ? 'Активно' : 'На паузе'}
-                        </span>
-                        <span className="text-[11px] bg-[#182533] text-[#24A1DE] px-2 py-0.5 rounded-md border border-[#242F3D]">
-                          Режим: {rule.match_mode.toUpperCase()}
-                        </span>
-                        <span className="text-[11px] bg-[#182533] text-indigo-300 px-2 py-0.5 rounded-md border border-[#242F3D]">
-                          {ACTION_LABELS[rule.action_type]}
-                        </span>
-                      </div>
-                      {rule.description && (
-                        <p className="text-xs text-slate-400 mt-0.5">{rule.description}</p>
-                      )}
+        <div className="grid gap-4 lg:grid-cols-2">
+          {rules.map((rule) => {
+            const sourceNames = rule.source_chat_ids.includes('*')
+              ? ['Все мои чаты']
+              : rule.source_chat_ids.map((id) => dialogById.get(id)?.title).filter(Boolean) as string[];
+            const targetName = rule.target_chat_id ? dialogById.get(rule.target_chat_id)?.title : null;
+            return (
+              <article key={rule.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="truncate text-base font-bold text-zinc-900">{rule.name}</h2>
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${rule.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-100 text-zinc-500'}`}>{rule.is_active ? 'Активно' : 'На паузе'}</span>
                     </div>
+                    {rule.description && <p className="mt-1 line-clamp-2 text-sm text-zinc-500">{rule.description}</p>}
                   </div>
-
-                  {/* Keyword Tags */}
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <span className="text-xs text-slate-400 flex items-center gap-1 mr-1">
-                      <Tag className="w-3.5 h-3.5 text-[#24A1DE]" />
-                      Ключевые слова ({rule.trigger_words.length}):
-                    </span>
-                    {rule.trigger_words.map((word) => (
-                        <span
-                          key={word}
-                          className="text-xs bg-[#182533] text-slate-200 px-2.5 py-0.5 rounded-md border border-[#242F3D]"
-                        >
-                          {word}
-                        </span>
-                    ))}
-
-                    {rule.exclude_words.length > 0 && (
-                      <>
-                        <span className="text-xs text-rose-400 flex items-center gap-1 ml-3 mr-1">
-                          <ShieldAlert className="w-3.5 h-3.5" />
-                          Минус-слова:
-                        </span>
-                        {rule.exclude_words.map((word) => (
-                          <span
-                            key={word}
-                            className="text-xs bg-rose-500/10 text-rose-300 px-2 py-0.5 rounded-md border border-rose-500/20"
-                          >
-                            -{word}
-                          </span>
-                        ))}
-                      </>
-                    )}
-                  </div>
-
-                  {/* Target & Source */}
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400">
-                    <div className="flex items-center gap-1.5">
-                      <MessageSquare className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Источники:</span>
-                      <span className="text-slate-200 font-mono">
-                        {rule.source_chat_ids.includes('*') ? 'Все чаты (*)' : `${rule.source_chat_ids.length} чат(ов)`}
-                      </span>
-                    </div>
-
-                    {rule.target_chat_id && (
-                      <div className="flex items-center gap-1.5">
-                        <ArrowRight className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Куда слать:</span>
-                        <span className="text-emerald-300 font-mono">{rule.target_chat_id}</span>
-                      </div>
-                    )}
-
-                    {rule.webhook_url && (
-                      <div className="flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Webhook:</span>
-                        <span className="text-sky-300 truncate max-w-[200px]">{rule.webhook_url}</span>
-                      </div>
-                    )}
+                  <div className="flex shrink-0 gap-1">
+                    <button type="button" onClick={() => void toggleRule(rule)} className="rounded-xl p-2 text-zinc-500 hover:bg-[#E7F3FC] hover:text-[#2481CC]" title={rule.is_active ? 'Поставить на паузу' : 'Запустить'}>{rule.is_active ? <CirclePause className="h-[18px] w-[18px]" /> : <CirclePlay className="h-[18px] w-[18px]" />}</button>
+                    <button type="button" onClick={() => openEdit(rule)} className="rounded-xl p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900" title="Редактировать"><Pencil className="h-[18px] w-[18px]" /></button>
+                    <button type="button" onClick={() => void deleteRule(rule)} className="rounded-xl p-2 text-zinc-400 hover:bg-rose-50 hover:text-rose-600" title="Удалить"><Trash2 className="h-[18px] w-[18px]" /></button>
                   </div>
                 </div>
 
-                {/* Actions button */}
-                <div className="flex items-center gap-2 self-end lg:self-center">
-                  <button
-                    onClick={() => openEditModal(rule)}
-                    className="p-2 bg-[#182533] hover:bg-[#242F3D] text-slate-300 hover:text-white rounded-xl transition-colors"
-                    title="Редактировать правило"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(rule.id)}
-                    className="p-2 bg-[#182533] hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-xl transition-colors"
-                    title="Удалить правило"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                <div className="mt-4 space-y-3 border-t border-zinc-100 pt-4 text-sm">
+                  <div className="flex items-start gap-2"><SearchCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#2481CC]" /><div><span className="text-zinc-500">Ищем в: </span><span className="font-medium text-zinc-800">{sourceNames.length > 0 ? sourceNames.slice(0, 2).join(', ') : `${rule.source_chat_ids.length} выбранных чатах`}{sourceNames.length > 2 ? ` и ещё ${sourceNames.length - 2}` : ''}</span></div></div>
+                  <div className="flex items-start gap-2"><BellRing className="mt-0.5 h-4 w-4 shrink-0 text-[#2481CC]" /><div><span className="text-zinc-500">Уведомление: </span><span className="font-medium text-zinc-800">{targetName || 'Выбранный чат'}</span></div></div>
+                  <div className="flex flex-wrap gap-1.5 pt-1">{rule.trigger_words.slice(0, 6).map((word) => <span key={word} className="rounded-lg bg-[#E7F3FC] px-2 py-1 text-xs font-semibold text-[#2481CC]">{word}</span>)}{rule.trigger_words.length > 6 && <span className="rounded-lg bg-zinc-100 px-2 py-1 text-xs text-zinc-500">+{rule.trigger_words.length - 6}</span>}</div>
                 </div>
-              </div>
-            </div>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
 
-      {/* Create / Edit Rule Modal */}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        title={editingRuleId ? 'Редактирование правила' : 'Новое правило мониторинга'}
-        maxWidth="max-w-3xl"
-      >
-        <form onSubmit={handleSaveRule} className="space-y-5 text-sm">
-          {formError && (
-            <div role="alert" className="p-3.5 bg-rose-500/10 border border-rose-500/25 text-rose-300 rounded-xl text-sm">
-              {formError}
-            </div>
-          )}
-
-          {/* Rule Name & Description */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Название правила *
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="Например: Заказы на разработку сайтов"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Краткое описание (опционально)
-              </label>
-              <input
-                type="text"
-                placeholder="Заметки для себя"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-              />
-            </div>
-          </div>
-
-          {/* Trigger Words Tag Input */}
-          <div className="p-4 bg-[#182533] border border-[#242F3D] rounded-xl space-y-3">
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
-              🎯 Триггер-слова (Ключевые слова)
+      <Modal isOpen={formOpen} onClose={() => setFormOpen(false)} title={editingRule ? 'Редактировать правило' : 'Новое правило'} maxWidth="max-w-4xl">
+        <form onSubmit={saveRule} className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-sm font-semibold text-zinc-700">Название правила
+              <input required value={form.name} onChange={(event) => updateForm('name', event.target.value)} placeholder="Например: Новые заказы" className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-3 text-sm font-normal text-zinc-900 placeholder-zinc-400 focus:border-[#2481CC]" />
             </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Введите слово или фразу и нажмите Enter (или через запятую)"
-                value={triggerInput}
-                onChange={(e) => setTriggerInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddTrigger();
-                  }
-                }}
-                className="flex-1 bg-[#17212B] border border-[#242F3D] rounded-xl px-3.5 py-2 text-white outline-none focus:border-[#24A1DE]"
-              />
-              <button
-                type="button"
-                onClick={handleAddTrigger}
-                className="px-4 py-2 bg-[#24A1DE] text-white rounded-xl font-medium text-xs hover:bg-[#2090c7]"
-              >
-                Добавить
-              </button>
-            </div>
-
-            {/* Render Tags */}
-            <div className="flex flex-wrap gap-2 pt-1">
-              {triggerWords.length === 0 ? (
-                <span className="text-xs text-amber-300 italic">
-                  Добавьте хотя бы одно слово, фразу или регулярное выражение.
-                </span>
-              ) : (
-                triggerWords.map((word) => (
-                  <span
-                    key={word}
-                    className="inline-flex items-center gap-1.5 bg-[#17212B] border border-[#242F3D] text-slate-200 text-xs px-3 py-1 rounded-lg"
-                  >
-                    {word}
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveTrigger(word)}
-                      className="text-slate-400 hover:text-rose-400"
-                    >
-                      &times;
-                    </button>
-                  </span>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Exclude Words (Minus Words) */}
-          <div className="p-4 bg-[#182533] border border-[#242F3D] rounded-xl space-y-3">
-            <label className="block text-xs font-semibold text-rose-400 uppercase tracking-wider">
-              🚫 Минус-слова (Исключения)
+            <label className="text-sm font-semibold text-zinc-700">Короткое описание <span className="font-normal text-zinc-400">(необязательно)</span>
+              <input value={form.description} onChange={(event) => updateForm('description', event.target.value)} placeholder="Для чего нужно это правило" className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-3 text-sm font-normal text-zinc-900 placeholder-zinc-400 focus:border-[#2481CC]" />
             </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Слова, при наличии которых сообщение будет игнорироваться"
-                value={excludeInput}
-                onChange={(e) => setExcludeInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddExclude();
-                  }
-                }}
-                className="flex-1 bg-[#17212B] border border-[#242F3D] rounded-xl px-3.5 py-2 text-white outline-none focus:border-rose-500"
-              />
-              <button
-                type="button"
-                onClick={handleAddExclude}
-                className="px-4 py-2 bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-xl font-medium text-xs hover:bg-rose-500/30"
-              >
-                Исключить
-              </button>
-            </div>
-
-            <div className="flex flex-wrap gap-2 pt-1">
-              {excludeWords.map((word) => (
-                <span
-                  key={word}
-                  className="inline-flex items-center gap-1.5 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs px-3 py-1 rounded-lg"
-                >
-                  -{word}
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveExclude(word)}
-                    className="text-rose-400 hover:text-white"
-                  >
-                    &times;
-                  </button>
-                </span>
-              ))}
-            </div>
           </div>
 
-          {/* Matching Engine Mode & Case Sensitivity */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Логика соответствия
-              </label>
-              <select
-                value={matchMode}
-                onChange={(event) => setMatchMode(event.target.value as MatchMode)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-              >
-                <option value="any">Любое из слов (ANY)</option>
-                <option value="all">Все слова одновременно (ALL)</option>
-                <option value="regex">Регулярное выражение (Regex)</option>
-                <option value="exact">Точное совпадение слова (Word boundary)</option>
-              </select>
+          <section className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 sm:p-5">
+            <div className="mb-4 flex items-center gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#2481CC] text-sm font-bold text-white">1</span><div><h3 className="font-bold text-zinc-900">Где искать?</h3><p className="text-xs text-zinc-500">Выберите все диалоги или только нужные.</p></div></div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className={`flex cursor-pointer items-start gap-3 rounded-xl border bg-white p-4 ${form.sourceMode === 'all' ? 'border-[#2481CC] ring-2 ring-[#2481CC]/10' : 'border-zinc-200'}`}><input type="radio" name="sourceMode" checked={form.sourceMode === 'all'} onChange={() => updateForm('sourceMode', 'all')} className="mt-0.5 accent-[#2481CC]" /><span><span className="block text-sm font-semibold text-zinc-900">Во всех моих чатах</span><span className="mt-0.5 block text-xs text-zinc-500">Новые диалоги тоже попадут в мониторинг</span></span></label>
+              <label className={`flex cursor-pointer items-start gap-3 rounded-xl border bg-white p-4 ${form.sourceMode === 'selected' ? 'border-[#2481CC] ring-2 ring-[#2481CC]/10' : 'border-zinc-200'}`}><input type="radio" name="sourceMode" checked={form.sourceMode === 'selected'} onChange={() => updateForm('sourceMode', 'selected')} className="mt-0.5 accent-[#2481CC]" /><span><span className="block text-sm font-semibold text-zinc-900">Только в выбранных чатах</span><span className="mt-0.5 block text-xs text-zinc-500">Точный список групп, каналов и людей</span></span></label>
             </div>
+            {form.sourceMode === 'selected' && <div className="mt-4"><button type="button" onClick={() => setPickerOpen(true)} className="rounded-xl border border-[#2481CC]/30 bg-[#E7F3FC] px-4 py-2.5 text-sm font-semibold text-[#2481CC] hover:border-[#2481CC]">Выбрать чаты… {form.sourceIds.length > 0 && `(${form.sourceIds.length})`}</button><div className="mt-3 flex flex-wrap gap-2">{selectedSourceChats.map((chat) => <span key={chat.id} className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-medium text-zinc-700">{chat.title}<button type="button" onClick={() => updateForm('sourceIds', form.sourceIds.filter((id) => id !== chat.id))} aria-label={`Убрать ${chat.title}`}><X className="h-3 w-3 text-zinc-400" /></button></span>)}</div></div>}
+          </section>
 
-            <div className="flex items-center pt-6">
-              <label className="flex items-center gap-2 cursor-pointer text-slate-300 select-none">
-                <input
-                  type="checkbox"
-                  checked={caseSensitive}
-                  onChange={(e) => setCaseSensitive(e.target.checked)}
-                  className="w-4 h-4 rounded text-[#24A1DE] focus:ring-0 bg-[#182533] border-[#242F3D]"
-                />
-                <span className="text-xs">Учитывать регистр (Case-sensitive)</span>
-              </label>
-            </div>
-          </div>
+          <section className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 sm:p-5">
+            <div className="mb-4 flex items-center gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#2481CC] text-sm font-bold text-white">2</span><div><h3 className="font-bold text-zinc-900">Ключевые слова</h3><p className="text-xs text-zinc-500">Нажмите Enter или поставьте запятую после каждого слова.</p></div></div>
+            <TagsInput values={form.triggerWords} onChange={(values) => updateForm('triggerWords', values)} placeholder="заказ, бот, разработка, куплю" />
+            <button type="button" onClick={() => setAdvancedOpen((value) => !value)} className="mt-3 flex items-center gap-1.5 text-sm font-semibold text-zinc-500 hover:text-zinc-900">Дополнительные настройки <ChevronDown className={`h-4 w-4 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} /></button>
+            {advancedOpen && <div className="mt-4 space-y-4 rounded-xl border border-zinc-200 bg-white p-4"><div><label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Слова-исключения</label><TagsInput values={form.excludeWords} onChange={(values) => updateForm('excludeWords', values)} placeholder="бесплатно, вакансия, спам" tone="red" /></div><div className="grid gap-4 sm:grid-cols-2"><label className="text-sm font-semibold text-zinc-700">Как искать<select value={form.matchMode} onChange={(event) => updateForm('matchMode', event.target.value as MatchMode)} className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 font-normal"><option value="any">Любое из слов</option><option value="all">Все слова вместе</option><option value="exact">Только целые слова</option><option value="regex">Регулярные выражения</option></select></label><label className="flex items-center gap-3 self-end rounded-xl border border-zinc-200 p-3 text-sm font-medium text-zinc-700"><input type="checkbox" checked={form.caseSensitive} onChange={(event) => updateForm('caseSensitive', event.target.checked)} className="h-4 w-4 accent-[#2481CC]" />Учитывать регистр букв</label></div></div>}
+          </section>
 
-          {/* Source & Target Chats */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                ID исходных чатов (прослушка)
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="* для всех, либо ID через запятую"
-                value={sourceChats}
-                onChange={(e) => setSourceChats(e.target.value)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">ID можно узнать во вкладке «Диалоги и чаты»</p>
-            </div>
+          <section className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 sm:p-5">
+            <div className="mb-4 flex items-center gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#2481CC] text-sm font-bold text-white">3</span><div><h3 className="font-bold text-zinc-900">Куда отправлять уведомления?</h3><p className="text-xs text-zinc-500">Выберите чат по названию — ID вводить не нужно.</p></div></div>
+            <select required value={form.targetId} onChange={(event) => updateForm('targetId', event.target.value)} className="w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-3 text-sm text-zinc-900 focus:border-[#2481CC]"><option value="">Выберите чат для уведомлений…</option>{dialogs.map((chat) => <option key={chat.id} value={chat.id}>{chat.title}{chat.username ? ` (@${chat.username})` : ''}</option>)}</select>
+          </section>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                ID целевого чата (куда слать отчет)
-              </label>
-              <input
-                type="text"
-                required={actionType === 'forward_alert' || actionType === 'both'}
-                placeholder="Например: -100192837465 или @my_alerts_channel"
-                value={targetChatId}
-                onChange={(e) => setTargetChatId(e.target.value)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">Куда бот отправит форматированное уведомление</p>
-            </div>
-          </div>
+          <section className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 sm:p-5">
+            <div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-200 text-sm font-bold text-zinc-600">4</span><div><h3 className="font-bold text-zinc-900">Автоответчик <span className="text-sm font-normal text-zinc-400">(необязательно)</span></h3><p className="text-xs text-zinc-500">Ответить автору прямо под найденным сообщением.</p></div></div><button type="button" role="switch" aria-checked={form.autoReply} onClick={() => updateForm('autoReply', !form.autoReply)} className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${form.autoReply ? 'bg-[#2481CC]' : 'bg-zinc-300'}`}><span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${form.autoReply ? 'translate-x-6' : 'translate-x-1'}`} /></button></div>
+            {form.autoReply && <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_150px]"><label className="text-sm font-semibold text-zinc-700">Текст ответа<textarea required rows={3} value={form.replyTemplate} onChange={(event) => updateForm('replyTemplate', event.target.value)} className="mt-2 w-full resize-none rounded-xl border border-zinc-200 bg-white px-3.5 py-3 text-sm font-normal" /><span className="mt-1 block text-xs font-normal text-zinc-400">Можно использовать {'{sender_name}'}</span></label><label className="text-sm font-semibold text-zinc-700">Задержка, сек.<input type="number" min={0} max={86400} value={form.replyDelaySeconds} onChange={(event) => updateForm('replyDelaySeconds', Number(event.target.value))} className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-3 font-normal" /></label></div>}
+            <label className="mt-4 flex max-w-xs items-center gap-2 text-xs font-medium text-zinc-500"><Clock3 className="h-4 w-4" /> Антиспам, секунд<input type="number" min={0} max={2592000} value={form.cooldownSeconds} onChange={(event) => updateForm('cooldownSeconds', Number(event.target.value))} className="w-24 rounded-lg border border-zinc-200 bg-white px-2 py-1.5 text-zinc-900" /></label>
+          </section>
 
-          {/* Action Type */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-              Тип действия
-            </label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {ACTION_OPTIONS.map((action) => (
-                <button
-                  key={action.id}
-                  type="button"
-                  onClick={() => setActionType(action.id)}
-                  className={`py-2 px-3 rounded-xl text-xs font-medium border transition-colors ${
-                    actionType === action.id
-                      ? 'bg-[#24A1DE] text-white border-[#24A1DE]'
-                      : 'bg-[#182533] text-slate-300 border-[#242F3D] hover:border-slate-500'
-                  }`}
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Auto-reply options if active */}
-          {(actionType === 'auto_reply' || actionType === 'both') && (
-            <div className="p-4 bg-[#182533] border border-[#242F3D] rounded-xl space-y-3">
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                🤖 Текст автоответа
-              </label>
-              <textarea
-                required
-                rows={2}
-                placeholder="Здравствуйте, {sender_name}! Мы готовы помочь вам с решением задачи..."
-                value={replyTemplate}
-                onChange={(e) => setReplyTemplate(e.target.value)}
-                className="w-full bg-[#17212B] border border-[#242F3D] rounded-xl p-3 text-white outline-none focus:border-[#24A1DE]"
-              />
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-slate-400">Задержка ответа (сек):</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="60"
-                  value={replyDelaySeconds}
-                  onChange={(e) => setReplyDelaySeconds(parseInt(e.target.value) || 0)}
-                  className="w-20 bg-[#17212B] border border-[#242F3D] rounded-lg px-2 py-1 text-white text-xs"
-                />
-              </div>
-            </div>
-          )}
-
-          {(actionType === 'forward_alert' || actionType === 'both') && (
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Шаблон отчёта (опционально)
-              </label>
-              <textarea
-                rows={3}
-                placeholder="{rule_name}: {message_text} — {message_link}"
-                value={alertTemplate}
-                onChange={(event) => setAlertTemplate(event.target.value)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl p-3 text-white outline-none focus:border-[#24A1DE]"
-              />
-              <p className="text-[11px] text-slate-500 mt-1">
-                Доступны: {'{rule_name}'}, {'{chat_title}'}, {'{sender_name}'}, {'{message_text}'}, {'{message_link}'}.
-              </p>
-            </div>
-          )}
-
-          {/* Webhook URL if active */}
-          {actionType === 'webhook' && (
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Webhook URL (HTTP POST)
-              </label>
-              <input
-                type="url"
-                required
-                placeholder="https://my-service.com/api/telegram-webhook"
-                value={webhookUrl}
-                onChange={(e) => setWebhookUrl(e.target.value)}
-                className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-              />
-            </div>
-          )}
-
-          {/* Anti-spam cooldown */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-              Анти-спам кулдаун от одного автора (секунды)
-            </label>
-            <input
-              type="number"
-              min="0"
-              placeholder="0 (без кулдауна)"
-              value={cooldownSeconds}
-              onChange={(e) => setCooldownSeconds(parseInt(e.target.value) || 0)}
-              className="w-full bg-[#182533] border border-[#242F3D] rounded-xl px-3.5 py-2.5 text-white outline-none focus:border-[#24A1DE]"
-            />
-          </div>
-
-          {/* Buttons */}
-          <div className="flex justify-end gap-3 pt-4 border-t border-[#242F3D]">
-            <button
-              type="button"
-              onClick={() => setIsModalOpen(false)}
-              className="px-5 py-2.5 bg-[#182533] hover:bg-[#242F3D] text-slate-300 rounded-xl font-medium transition-colors"
-            >
-              Отмена
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-6 py-2.5 bg-[#24A1DE] hover:bg-[#2090c7] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-colors shadow-lg shadow-[#24A1DE]/20"
-            >
-              {saving ? 'Сохраняем…' : editingRuleId ? 'Сохранить изменения' : 'Создать правило'}
-            </button>
-          </div>
+          {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
+          <div className="flex justify-end gap-3 border-t border-zinc-100 pt-5"><button type="button" onClick={() => setFormOpen(false)} className="rounded-xl px-4 py-2.5 text-sm font-semibold text-zinc-600 hover:bg-zinc-100">Отмена</button><button type="submit" disabled={saving} className="flex items-center gap-2 rounded-xl bg-[#2481CC] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#1C72B8] disabled:opacity-50">{saving ? 'Сохраняем…' : <><Check className="h-4 w-4" /> Сохранить правило</>}</button></div>
         </form>
       </Modal>
+
+      <ChatPickerModal isOpen={pickerOpen} chats={dialogs} selectedIds={form.sourceIds} onApply={(ids) => updateForm('sourceIds', ids)} onClose={() => setPickerOpen(false)} />
     </div>
   );
 };

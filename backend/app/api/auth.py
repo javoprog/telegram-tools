@@ -4,15 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.config import settings
 from backend.app.core.database import get_db
-from backend.app.core.security import (
-    create_access_token,
-    get_current_user,
-    verify_password,
-)
 from backend.app.models.account import Account, AccountStatus
-from backend.app.models.admin_credential import AdminCredential
 from backend.app.schemas.account import (
     AccountResponse,
     AuthStatusResponse,
@@ -20,7 +13,6 @@ from backend.app.schemas.account import (
     Verify2FAPassword,
     VerifyPhoneCode,
 )
-from backend.app.schemas.settings import LoginRequest, TokenResponse
 from backend.app.services.encryption import encrypt_string
 from backend.app.services.telegram_manager import (
     TelegramAuthError,
@@ -41,15 +33,23 @@ def _telegram_http_error(exc: TelegramManagerError) -> HTTPException:
         )
     if isinstance(exc, TelegramAuthError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    return HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=str(exc),
-    )
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
 
 
 async def _account_by_phone(db: AsyncSession, phone_number: str) -> Account | None:
+    result = await db.execute(select(Account).where(Account.phone_number == phone_number))
+    return result.scalar_one_or_none()
+
+
+async def _current_account(db: AsyncSession) -> Account | None:
     result = await db.execute(
-        select(Account).where(Account.phone_number == phone_number)
+        select(Account)
+        .where(
+            Account.status == AccountStatus.CONNECTED,
+            Account.is_active.is_(True),
+        )
+        .order_by(Account.id.desc())
+        .limit(1)
     )
     return result.scalar_one_or_none()
 
@@ -66,6 +66,16 @@ async def _save_connected_account(
     if account is None:
         account = Account(phone_number=phone_number)
         db.add(account)
+        await db.flush()
+
+    previous_result = await db.execute(
+        select(Account).where(Account.id != account.id, Account.is_active.is_(True))
+    )
+    previous_accounts = list(previous_result.scalars().all())
+    for previous in previous_accounts:
+        previous.status = AccountStatus.DISCONNECTED
+        previous.is_active = False
+        previous.phone_code_hash = None
 
     account.telegram_user_id = user["id"]
     account.first_name = user.get("first_name")
@@ -78,8 +88,10 @@ async def _save_connected_account(
     await db.commit()
     await db.refresh(account)
 
+    for previous in previous_accounts:
+        await telegram_manager.stop_client_session(previous.id)
+
     try:
-        # Replace a previous live client, if any, with the newly authorized session.
         await telegram_manager.stop_client_session(account.id)
         await telegram_manager.start_client_session(account.id, encrypted_session)
     except TelegramManagerError as exc:
@@ -94,54 +106,50 @@ async def _save_connected_account(
     return account
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login_admin(
-    credentials: LoginRequest,
-    db: AsyncSession = Depends(get_db),
-) -> TokenResponse:
-    credential = await db.get(AdminCredential, 1)
-    stored_password = (
-        credential.password_hash if credential is not None else settings.ADMIN_PASSWORD
-    )
-    if verify_password(credentials.password, stored_password):
-        return TokenResponse(access_token=create_access_token(subject="admin"))
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid admin password",
-    )
-
-
 @router.get("/me")
-async def get_me(user: str = Depends(get_current_user)) -> dict[str, str]:
-    return {"status": "authenticated", "user": user}
+async def get_me() -> dict[str, str]:
+    return {"status": "ready", "user": "user"}
+
+
+@router.get("/telegram/account", response_model=AccountResponse | None)
+async def get_telegram_account(db: AsyncSession = Depends(get_db)) -> Account | None:
+    return await _current_account(db)
 
 
 @router.get("/telegram/accounts", response_model=list[AccountResponse])
 async def list_telegram_accounts(
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> list[Account]:
-    result = await db.execute(select(Account).order_by(Account.id.desc()))
-    return list(result.scalars().all())
+    """Compatibility alias that exposes at most the single active account."""
+    account = await _current_account(db)
+    return [account] if account is not None else []
 
 
 @router.post("/telegram/request-code", response_model=AuthStatusResponse)
 async def request_code(
     request: RequestPhoneCode,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> AuthStatusResponse:
-    account = await _account_by_phone(db, request.phone_number)
-    if (
-        account is not None
-        and account.status == AccountStatus.CONNECTED
-        and account.is_active
-    ):
+    if await _current_account(db) is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This Telegram account is already connected",
+            detail="Disconnect the current Telegram account before connecting another one",
         )
 
+    pending_result = await db.execute(
+        select(Account).where(
+            Account.phone_number != request.phone_number,
+            Account.status.in_(
+                [AccountStatus.AWAITING_CODE, AccountStatus.AWAITING_PASSWORD]
+            ),
+        )
+    )
+    for pending in pending_result.scalars().all():
+        await telegram_manager.cancel_pending_auth(pending.phone_number)
+        pending.status = AccountStatus.DISCONNECTED
+        pending.phone_code_hash = None
+
+    account = await _account_by_phone(db, request.phone_number)
     try:
         auth_result = await telegram_manager.request_phone_code(request.phone_number)
     except TelegramManagerError as exc:
@@ -168,7 +176,6 @@ async def request_code(
 async def verify_code(
     request: VerifyPhoneCode,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> AuthStatusResponse:
     try:
         auth_result = await telegram_manager.verify_code(
@@ -207,7 +214,6 @@ async def verify_code(
 async def verify_2fa(
     request: Verify2FAPassword,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> AuthStatusResponse:
     try:
         auth_result = await telegram_manager.verify_2fa_password(
@@ -230,14 +236,10 @@ async def verify_2fa(
 async def disconnect_account(
     account_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> dict[str, str | int]:
     account = await db.get(Account, account_id)
     if account is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Account not found",
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
 
     await telegram_manager.cancel_pending_auth(account.phone_number)
     await telegram_manager.stop_client_session(account_id)

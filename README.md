@@ -14,7 +14,8 @@
   - Минус-слова / исключения (blacklist).
   - Чувствительность к регистру (Case-sensitive).
 - 💬 **Выбор источников и получателей**:
-  - Прослушивание всех чатов (`*`) или конкретных групп / каналов.
+  - Визуальный выбор групп, каналов и личных чатов по названию — без ручного ввода ID.
+  - Прослушивание всех чатов (`*`) или конкретных диалогов.
   - Пересылка красивых отчетов со ссылкой на оригинальное сообщение в целевой чат.
 - 🤖 **Автоответчик (Auto-reply)**:
   - Автоматический ответ автору сообщения в исходный чат с настраиваемой задержкой (антибан) и кулдауном.
@@ -24,7 +25,7 @@
   - Живой стрим пойманных сообщений по WebSockets с подсветкой триггеров.
 - 🔒 **Безопасность**:
   - Сессии Telegram хранятся в зашифрованном виде (AES/Fernet).
-  - Защита веб-панели мастер-паролем.
+  - Приложение работает с одним активным аккаунтом и не хранит пароль веб-панели.
 
 ---
 
@@ -46,7 +47,6 @@
    TG_API_ID=ваш-api-id-с-my.telegram.org
    TG_API_HASH=ваш-api-hash-с-my.telegram.org
    APP_SECRET_KEY=сгенерируйте-надежный-секретный-ключ-32-символа
-   ADMIN_PASSWORD=ваш-пароль-для-веб-панели
    PORT=8000
    ```
    `TG_API_ID` и `TG_API_HASH` являются общими ключами приложения: они обязательны и не принимаются через веб-интерфейс.
@@ -63,7 +63,7 @@
 # 1. Скопируйте файл окружения
 cp .env.example .env
 
-# Заполните TG_API_ID, TG_API_HASH, APP_SECRET_KEY и ADMIN_PASSWORD
+# Заполните TG_API_ID, TG_API_HASH и APP_SECRET_KEY
 
 # 2. Запустите через Docker Compose
 docker-compose up --build -d
@@ -79,7 +79,7 @@ docker-compose up --build -d
 telegram-tools/
 ├── backend/
 │   ├── app/
-│   │   ├── api/             # REST & WebSocket эндпоинты (auth, chats, rules, logs, settings, ws)
+│   │   ├── api/             # REST & WebSocket эндпоинты (auth, chats, rules, logs, ws)
 │   │   ├── core/            # Конфигурация, безопасность, база данных SQLite WAL
 │   │   ├── models/          # SQLAlchemy модели (Account, Rule, TriggerLog)
 │   │   ├── schemas/         # Pydantic схемы валидации
@@ -89,8 +89,8 @@ telegram-tools/
 ├── frontend/
 │   ├── src/
 │   │   ├── api/             # API клиент
-│   │   ├── components/      # Navbar, Modal
-│   │   ├── pages/           # RulesPage, LogsPage, ChatsPage, AuthPage, SettingsPage
+│   │   ├── components/      # Navbar, Modal, ChatPickerModal
+│   │   ├── pages/           # RulesPage, LogsPage, ChatsPage, AuthPage
 │   │   ├── types/           # TypeScript интерфейсы
 │   │   ├── App.tsx          # Главный роутер и WebSocket клиент
 │   │   └── main.tsx

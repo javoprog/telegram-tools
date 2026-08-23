@@ -1,363 +1,171 @@
-import { useState, type FormEvent } from 'react';
-import { Shield, Phone, KeyRound, Lock, CheckCircle2, AlertCircle, RefreshCw, LogOut } from 'lucide-react';
+import { useEffect, useState, type FormEvent } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  KeyRound,
+  LockKeyhole,
+  LogOut,
+  MessageCircle,
+  Phone,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+} from 'lucide-react';
+
 import { api, getErrorMessage } from '../api/client';
 import type { Account } from '../types';
 
 interface AuthPageProps {
-  accounts: Account[];
-  onRefreshAccounts: () => Promise<void> | void;
+  account: Account | null;
+  onAccountChanged: () => Promise<void> | void;
 }
 
-export const AuthPage = ({ accounts, onRefreshAccounts }: AuthPageProps) => {
-  const [step, setStep] = useState<'phone' | 'code' | '2fa'>('phone');
+type AuthStep = 'phone' | 'code' | '2fa';
+
+export const AuthPage = ({ account, onAccountChanged }: AuthPageProps) => {
+  const [step, setStep] = useState<AuthStep>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [code, setCode] = useState('');
   const [password2FA, setPassword2FA] = useState('');
+  const [chatCount, setChatCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  const activeAccounts = accounts.filter(
-    (account) => account.status === 'connected' && account.is_active,
-  );
-  const pendingAccounts = accounts.filter(
-    (account) => account.status === 'awaiting_code' || account.status === 'awaiting_password',
-  );
+  useEffect(() => {
+    if (!account) {
+      setChatCount(null);
+      return;
+    }
+    let cancelled = false;
+    api.getDialogs().then((result) => {
+      if (!cancelled) setChatCount(result.total);
+    }).catch(() => {
+      if (!cancelled) setChatCount(null);
+    });
+    return () => { cancelled = true; };
+  }, [account]);
 
-  const handleRequestCode = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!phoneNumber.trim()) return;
-    setError(null);
-    setSuccessMsg(null);
+  const requestCode = async (event: FormEvent) => {
+    event.preventDefault();
     setLoading(true);
-
+    setError(null);
+    setSuccess(null);
     try {
-      const res = await api.requestCode(phoneNumber.trim());
+      const result = await api.requestCode(phoneNumber.trim());
       setStep('code');
-      setSuccessMsg(res.message || 'Код подтверждения отправлен в ваш Telegram!');
-      await onRefreshAccounts();
+      setSuccess(result.message || 'Код отправлен в Telegram.');
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Ошибка отправки кода'));
+      setError(getErrorMessage(requestError, 'Не удалось отправить код'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerifyCode = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!code.trim()) return;
-    setError(null);
-    setSuccessMsg(null);
+  const verifyCode = async (event: FormEvent) => {
+    event.preventDefault();
     setLoading(true);
-
+    setError(null);
+    setSuccess(null);
     try {
-      const res = await api.verifyCode(phoneNumber.trim(), code.trim());
-
-      if (res.status === 'awaiting_password') {
+      const result = await api.verifyCode(phoneNumber.trim(), code.trim());
+      if (result.status === 'awaiting_password') {
         setStep('2fa');
-        setSuccessMsg('Требуется облачный пароль двухфакторной аутентификации (2FA).');
+        setSuccess('На аккаунте включён облачный пароль. Введите его на следующем шаге.');
       } else {
-        setSuccessMsg('Telegram аккаунт успешно подключен!');
-        setStep('phone');
-        setCode('');
-        setPhoneNumber('');
-        await onRefreshAccounts();
+        setSuccess('Готово! Telegram подключён.');
+        await onAccountChanged();
       }
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Неверный код подтверждения'));
+      setError(getErrorMessage(requestError, 'Код не подошёл. Проверьте и попробуйте снова.'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleVerify2FA = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!password2FA.trim()) return;
-    setError(null);
-    setSuccessMsg(null);
+  const verify2FA = async (event: FormEvent) => {
+    event.preventDefault();
     setLoading(true);
-
+    setError(null);
+    setSuccess(null);
     try {
       await api.verify2FA(phoneNumber.trim(), password2FA);
-      setSuccessMsg('Авторизация 2FA успешно завершена!');
-      setStep('phone');
-      setPassword2FA('');
-      setCode('');
-      setPhoneNumber('');
-      await onRefreshAccounts();
+      setSuccess('Готово! Telegram подключён.');
+      await onAccountChanged();
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Неверный 2FA пароль'));
+      setError(getErrorMessage(requestError, 'Неверный облачный пароль'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDisconnect = async (accountId: number) => {
-    if (!window.confirm('Вы действительно хотите отключить этот Telegram‑аккаунт?')) return;
+  const disconnect = async () => {
+    if (!account || !window.confirm('Выйти из этого Telegram-аккаунта и подключить другой номер?')) return;
     setLoading(true);
+    setError(null);
     try {
-      await api.disconnectAccount(accountId);
-      await onRefreshAccounts();
+      await api.disconnectAccount(account.id);
+      setStep('phone');
+      setPhoneNumber('');
+      setCode('');
+      setPassword2FA('');
+      setSuccess('Аккаунт отключён. Теперь можно войти с другим номером.');
+      await onAccountChanged();
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Ошибка отключения аккаунта'));
+      setError(getErrorMessage(requestError, 'Не удалось отключить аккаунт'));
     } finally {
       setLoading(false);
     }
   };
+
+  const fullName = account
+    ? [account.first_name, account.last_name].filter(Boolean).join(' ') || account.phone_number
+    : '';
+  const stepNumber = step === 'phone' ? 1 : step === 'code' ? 2 : 3;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      {/* Page Header */}
+    <div className="mx-auto max-w-3xl space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-          <Shield className="w-6 h-6 text-[#24A1DE]" />
-          Авторизация Telegram (MTProto Userbot)
-        </h1>
-        <p className="text-slate-400 mt-1 text-sm">
-          Авторизуйте свой аккаунт через официальный Telegram MTProto API для доступа ко всем чатам и группам, где запрещены обычные боты.
-        </p>
+        <h1 className="flex items-center gap-2 text-2xl font-bold text-zinc-900"><Phone className="h-6 w-6 text-[#2481CC]" /> Аккаунт Telegram</h1>
+        <p className="mt-1 text-sm text-zinc-500">Один номер — все ваши чаты, правила и уведомления в одном месте.</p>
       </div>
 
-      {/* Active Account Status */}
-      {activeAccounts.map((activeAccount) => (
-        <div key={activeAccount.id} className="bg-[#182533] border border-emerald-500/30 rounded-2xl p-6 shadow-xl relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+      {error && <div role="alert" className="flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700"><AlertCircle className="h-5 w-5 shrink-0" />{error}</div>}
+      {success && <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700"><CheckCircle2 className="h-5 w-5 shrink-0" />{success}</div>}
 
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#24A1DE] to-emerald-500 flex items-center justify-center text-white font-bold text-xl shadow-lg">
-                {(activeAccount.first_name || activeAccount.phone_number).charAt(0).toUpperCase()}
+      {account ? (
+        <section className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
+          <div className="h-24 bg-gradient-to-r from-[#2481CC] to-[#55A7E1]" />
+          <div className="px-5 pb-6 sm:px-8">
+            <div className="-mt-10 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+              <div className="flex items-end gap-4">
+                <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl border-4 border-white bg-[#E7F3FC] text-2xl font-bold text-[#2481CC] shadow-sm">{(account.first_name || account.phone_number).charAt(0).toUpperCase()}</div>
+                <div className="pb-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-bold text-zinc-900">{fullName}</h2><span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />В сети</span></div>{account.username && <p className="mt-0.5 text-sm font-medium text-[#2481CC]">@{account.username}</p>}</div>
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold text-white">
-                    {[activeAccount.first_name, activeAccount.last_name].filter(Boolean).join(' ') || activeAccount.phone_number}
-                  </h3>
-                  <span className="flex items-center gap-1 text-xs bg-emerald-500/20 text-emerald-400 font-semibold px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Активен
-                  </span>
-                </div>
-                <div className="text-sm text-slate-400 mt-0.5 space-x-3">
-                  <span>{activeAccount.phone_number}</span>
-                  {activeAccount.username && (
-                    <span className="text-[#24A1DE]">@{activeAccount.username}</span>
-                  )}
-                  {activeAccount.telegram_user_id != null && (
-                    <span className="text-slate-500">ID: {activeAccount.telegram_user_id}</span>
-                  )}
-                </div>
-              </div>
+              <button type="button" onClick={() => void disconnect()} disabled={loading} className="flex items-center justify-center gap-2 rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-sm font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50"><LogOut className="h-4 w-4" /> Выйти / Сменить номер</button>
             </div>
 
-            <button
-              onClick={() => handleDisconnect(activeAccount.id)}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-xl text-sm font-medium transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-              Отключить
-            </button>
+            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl bg-zinc-50 p-4"><p className="text-xs text-zinc-500">Номер телефона</p><p className="mt-1 text-sm font-bold text-zinc-900">{account.phone_number}</p></div>
+              <div className="rounded-xl bg-zinc-50 p-4"><p className="text-xs text-zinc-500">Telegram ID</p><p className="mt-1 text-sm font-bold text-zinc-900">{account.telegram_user_id ?? '—'}</p></div>
+              <div className="rounded-xl bg-zinc-50 p-4"><p className="flex items-center gap-1 text-xs text-zinc-500"><MessageCircle className="h-3.5 w-3.5" /> Доступно чатов</p><p className="mt-1 text-sm font-bold text-zinc-900">{chatCount ?? 'Считаем…'}</p></div>
+            </div>
+
+            <div className="mt-5 flex items-start gap-3 rounded-xl bg-[#F4FAFE] p-4 text-sm text-zinc-600"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-[#2481CC]" /><p>Сессия Telegram хранится в зашифрованном виде. Пароль панели не нужен: после подключения можно сразу пользоваться приложением.</p></div>
           </div>
-        </div>
-      ))}
+        </section>
+      ) : (
+        <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-8">
+          <div className="mb-7 flex items-center justify-center gap-2" aria-label={`Шаг ${stepNumber} из 3`}>
+            {[1, 2, 3].map((number) => <div key={number} className="flex items-center"><span className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${number <= stepNumber ? 'bg-[#2481CC] text-white' : 'bg-zinc-100 text-zinc-400'}`}>{number < stepNumber ? <CheckCircle2 className="h-4 w-4" /> : number}</span>{number < 3 && <span className={`h-0.5 w-12 sm:w-20 ${number < stepNumber ? 'bg-[#2481CC]' : 'bg-zinc-200'}`} />}</div>)}</div>
 
-      {pendingAccounts.length > 0 && (
-        <div className="bg-amber-500/10 border border-amber-500/25 rounded-2xl p-4 space-y-3">
-          <p className="text-sm font-medium text-amber-200">Есть незавершённая авторизация</p>
-          <div className="flex flex-wrap gap-2">
-            {pendingAccounts.map((account) => (
-              <button
-                key={account.id}
-                type="button"
-                onClick={() => {
-                  setPhoneNumber(account.phone_number);
-                  setStep(account.status === 'awaiting_password' ? '2fa' : 'code');
-                  setError(null);
-                  setSuccessMsg(null);
-                }}
-                className="px-3 py-1.5 rounded-lg bg-[#182533] border border-amber-500/20 text-xs text-amber-100 hover:border-amber-400"
-              >
-                Продолжить {account.phone_number}
-              </button>
-            ))}
-          </div>
-        </div>
+          {step === 'phone' && <form onSubmit={requestCode} className="mx-auto max-w-md space-y-5"><div className="text-center"><div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#E7F3FC] text-[#2481CC]"><Send className="h-7 w-7" /></div><h2 className="mt-4 text-xl font-bold text-zinc-900">Войдите в Telegram</h2><p className="mt-1 text-sm text-zinc-500">Введите номер в международном формате. Код придёт в приложение Telegram или по SMS.</p></div><label className="block text-sm font-semibold text-zinc-700">Номер телефона<div className="relative mt-2"><Phone className="absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-400" /><input type="tel" required autoFocus autoComplete="tel" value={phoneNumber} onChange={(event) => setPhoneNumber(event.target.value)} placeholder="+998 90 123 45 67" className="w-full rounded-xl border border-zinc-200 bg-white py-3 pl-11 pr-4 text-zinc-900 placeholder-zinc-400 focus:border-[#2481CC]" /></div></label><button type="submit" disabled={loading || !phoneNumber.trim()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#2481CC] py-3 text-sm font-semibold text-white hover:bg-[#1C72B8] disabled:opacity-50">{loading && <RefreshCw className="h-4 w-4 animate-spin" />} Получить код</button></form>}
+
+          {step === 'code' && <form onSubmit={verifyCode} className="mx-auto max-w-md space-y-5"><div className="text-center"><div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#E7F3FC] text-[#2481CC]"><KeyRound className="h-7 w-7" /></div><h2 className="mt-4 text-xl font-bold text-zinc-900">Введите код</h2><p className="mt-1 text-sm text-zinc-500">Мы отправили его для номера <span className="font-semibold text-zinc-800">{phoneNumber}</span>.</p></div><input type="text" required autoFocus autoComplete="one-time-code" inputMode="numeric" value={code} onChange={(event) => setCode(event.target.value)} placeholder="12345" className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-center text-xl tracking-[0.35em] text-zinc-900 placeholder-zinc-300 focus:border-[#2481CC]" /><div className="flex gap-3"><button type="button" onClick={() => setStep('phone')} className="w-1/3 rounded-xl border border-zinc-200 py-3 text-sm font-semibold text-zinc-600 hover:bg-zinc-50">Назад</button><button type="submit" disabled={loading || !code.trim()} className="flex w-2/3 items-center justify-center gap-2 rounded-xl bg-[#2481CC] py-3 text-sm font-semibold text-white hover:bg-[#1C72B8] disabled:opacity-50">{loading && <RefreshCw className="h-4 w-4 animate-spin" />} Подтвердить</button></div></form>}
+
+          {step === '2fa' && <form onSubmit={verify2FA} className="mx-auto max-w-md space-y-5"><div className="text-center"><div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#E7F3FC] text-[#2481CC]"><LockKeyhole className="h-7 w-7" /></div><h2 className="mt-4 text-xl font-bold text-zinc-900">Облачный пароль</h2><p className="mt-1 text-sm text-zinc-500">Для этого аккаунта включена двухфакторная защита Telegram.</p></div><input type="password" required autoFocus autoComplete="current-password" value={password2FA} onChange={(event) => setPassword2FA(event.target.value)} placeholder="Введите пароль 2FA" className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-zinc-900 placeholder-zinc-400 focus:border-[#2481CC]" /><div className="flex gap-3"><button type="button" onClick={() => setStep('code')} className="w-1/3 rounded-xl border border-zinc-200 py-3 text-sm font-semibold text-zinc-600 hover:bg-zinc-50">Назад</button><button type="submit" disabled={loading || !password2FA} className="flex w-2/3 items-center justify-center gap-2 rounded-xl bg-[#2481CC] py-3 text-sm font-semibold text-white hover:bg-[#1C72B8] disabled:opacity-50">{loading && <RefreshCw className="h-4 w-4 animate-spin" />} Войти</button></div></form>}
+        </section>
       )}
-
-      {/* Messages */}
-      {error && (
-        <div className="flex items-center gap-2 p-4 bg-rose-500/10 border border-rose-500/30 text-rose-400 rounded-xl text-sm">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {successMsg && (
-        <div className="flex items-center gap-2 p-4 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-xl text-sm">
-          <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-          <span>{successMsg}</span>
-        </div>
-      )}
-
-      {/* Login Form Wizard */}
-      <div className="bg-[#17212B] border border-[#242F3D] rounded-2xl p-6 sm:p-8 shadow-xl">
-        <div className="grid grid-cols-3 gap-2 mb-7" aria-label="Этапы авторизации">
-          {[
-            { id: 'phone', number: 1, label: 'Телефон' },
-            { id: 'code', number: 2, label: 'Код' },
-            { id: '2fa', number: 3, label: '2FA' },
-          ].map((item) => {
-            const order = { phone: 1, code: 2, '2fa': 3 } as const;
-            const active = order[step] >= item.number;
-            return (
-              <div key={item.id} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${active ? 'border-[#24A1DE]/40 bg-[#24A1DE]/10 text-white' : 'border-[#242F3D] text-slate-500'}`}>
-                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${active ? 'bg-[#24A1DE] text-white' : 'bg-[#242F3D]'}`}>{item.number}</span>
-                <span className="text-xs font-medium">{item.label}</span>
-              </div>
-            );
-          })}
-        </div>
-        {step === 'phone' && (
-          <form onSubmit={handleRequestCode} className="space-y-5">
-            <div>
-              <h2 className="text-lg font-semibold text-white">Вход по номеру телефона</h2>
-              <p className="text-sm text-slate-400 mt-1">
-                Введите номер телефона в международном формате (например, +79991234567).
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                Номер телефона
-              </label>
-              <div className="relative">
-                <Phone className="w-5 h-5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="tel"
-                  required
-                  autoComplete="tel"
-                  placeholder="+7 999 123-45-67"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  className="w-full bg-[#182533] border border-[#242F3D] focus:border-[#24A1DE] rounded-xl pl-11 pr-4 py-3 text-white placeholder-slate-500 outline-none transition-colors"
-                />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading || !phoneNumber.trim()}
-              className="w-full bg-[#24A1DE] hover:bg-[#2090c7] disabled:opacity-50 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-[#24A1DE]/20"
-            >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-5 h-5 animate-spin" />
-                  Подключение к Telegram...
-                </>
-              ) : (
-                'Получить код подтверждения'
-              )}
-            </button>
-          </form>
-        )}
-
-        {step === 'code' && (
-          <form onSubmit={handleVerifyCode} className="space-y-5">
-            <div>
-              <h2 className="text-lg font-semibold text-white">Введите код из Telegram</h2>
-              <p className="text-sm text-slate-400 mt-1">
-                Код отправлен в официальное приложение Telegram для номера{' '}
-                <span className="text-white font-medium">{phoneNumber}</span>.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                Код подтверждения
-              </label>
-              <div className="relative">
-                <KeyRound className="w-5 h-5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  required
-                  autoFocus
-                  autoComplete="one-time-code"
-                  inputMode="numeric"
-                  placeholder="12345"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  className="w-full bg-[#182533] border border-[#242F3D] focus:border-[#24A1DE] rounded-xl pl-11 pr-4 py-3 text-white text-lg tracking-widest placeholder-slate-500 outline-none transition-colors"
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => setStep('phone')}
-                className="w-1/3 bg-[#182533] hover:bg-[#242F3D] text-slate-300 font-medium py-3 rounded-xl transition-colors text-sm"
-              >
-                Назад
-              </button>
-              <button
-                type="submit"
-                disabled={loading || !code.trim()}
-                className="w-2/3 bg-[#24A1DE] hover:bg-[#2090c7] disabled:opacity-50 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-[#24A1DE]/20"
-              >
-                {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Подтвердить код'}
-              </button>
-            </div>
-          </form>
-        )}
-
-        {step === '2fa' && (
-          <form onSubmit={handleVerify2FA} className="space-y-5">
-            <div>
-              <h2 className="text-lg font-semibold text-white">Облачный пароль 2FA</h2>
-              <p className="text-sm text-slate-400 mt-1">
-                На вашем аккаунте включена двухфакторная аутентификация. Введите пароль.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                2FA Пароль
-              </label>
-              <div className="relative">
-                <Lock className="w-5 h-5 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="password"
-                  required
-                  autoFocus
-                  autoComplete="current-password"
-                  placeholder="••••••••"
-                  value={password2FA}
-                  onChange={(e) => setPassword2FA(e.target.value)}
-                  className="w-full bg-[#182533] border border-[#242F3D] focus:border-[#24A1DE] rounded-xl pl-11 pr-4 py-3 text-white placeholder-slate-500 outline-none transition-colors"
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => setStep('code')}
-                className="w-1/3 bg-[#182533] hover:bg-[#242F3D] text-slate-300 font-medium py-3 rounded-xl transition-colors text-sm"
-              >
-                Назад
-              </button>
-              <button
-                type="submit"
-                disabled={loading || password2FA.length === 0}
-                className="w-2/3 bg-[#24A1DE] hover:bg-[#2090c7] disabled:opacity-50 text-white font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-[#24A1DE]/20"
-              >
-                {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : 'Войти'}
-              </button>
-            </div>
-          </form>
-        )}
-      </div>
     </div>
   );
 };

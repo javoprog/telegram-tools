@@ -9,7 +9,7 @@ export type ChatType = 'channel' | 'supergroup' | 'group' | 'user' | 'bot';
 export type ChatTypeFilter = Exclude<ChatType, 'bot'>;
 export type MatchMode = 'any' | 'all' | 'regex' | 'exact';
 export type ActionType = 'forward_alert' | 'auto_reply' | 'webhook' | 'both';
-export type DashboardTab = 'rules' | 'logs' | 'chats' | 'auth' | 'settings';
+export type DashboardTab = 'rules' | 'logs' | 'chats' | 'auth';
 
 export interface Account {
   id: number;
@@ -56,8 +56,8 @@ export interface Rule {
   updated_at?: string;
 }
 
-export type RuleCreate = Omit<Rule, 'id' | 'created_at' | 'updated_at'>;
-export type RuleUpdate = Partial<Omit<Rule, 'id' | 'account_id' | 'created_at' | 'updated_at'>>;
+export type RuleCreate = Omit<Rule, 'id' | 'account_id' | 'created_at' | 'updated_at'>;
+export type RuleUpdate = Partial<RuleCreate>;
 
 export interface TriggerLog {
   id: number;
@@ -76,15 +76,6 @@ export interface TriggerLog {
   action_status: string;
   error_message?: string | null;
   created_at: string;
-}
-
-export interface AppSettings {
-  telegram_api_configured: boolean;
-  has_admin_password: boolean;
-  app_version: string;
-  data_dir: string;
-  database_engine: string;
-  journal_mode: string;
 }
 
 export interface TelegramAuthResponse {

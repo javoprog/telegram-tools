@@ -1,43 +1,23 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import {
-  Bot,
-  Check,
-  Copy,
-  Hash,
-  MessageSquare,
-  RefreshCw,
-  Search,
-  User,
-  Users,
-  Volume2,
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
+import { Bot, MessageCircle, Radio, RefreshCw, Search, UserRound, UsersRound } from 'lucide-react';
 
 import { api, getErrorMessage } from '../api/client';
-import type { Account, ChatDialog, ChatType, ChatTypeFilter } from '../types';
+import type { Account, ChatDialog, ChatType } from '../types';
 
 interface ChatsPageProps {
-  accounts: Account[];
-  selectedAccountId: number | null;
+  account: Account | null;
 }
 
-type DialogFilter = 'all' | ChatTypeFilter;
+type Category = 'all' | 'groups' | 'channels' | 'users';
 
-const FILTERS: { id: DialogFilter; label: string }[] = [
+const categories: { id: Category; label: string }[] = [
   { id: 'all', label: 'Все' },
-  { id: 'channel', label: 'Каналы' },
-  { id: 'supergroup', label: 'Супергруппы' },
-  { id: 'group', label: 'Группы' },
-  { id: 'user', label: 'Личные' },
+  { id: 'groups', label: 'Группы и супергруппы' },
+  { id: 'channels', label: 'Каналы' },
+  { id: 'users', label: 'Личные чаты' },
 ];
 
-const chatIcon = (type: ChatType): ReactNode => {
-  if (type === 'channel') return <Volume2 className="w-5 h-5 text-[#24A1DE]" />;
-  if (type === 'supergroup' || type === 'group') return <Users className="w-5 h-5 text-indigo-400" />;
-  if (type === 'bot') return <Bot className="w-5 h-5 text-violet-400" />;
-  return <User className="w-5 h-5 text-emerald-400" />;
-};
-
-const TYPE_LABELS: Record<ChatType, string> = {
+const typeLabels: Record<ChatType, string> = {
   channel: 'Канал',
   supergroup: 'Супергруппа',
   group: 'Группа',
@@ -45,144 +25,99 @@ const TYPE_LABELS: Record<ChatType, string> = {
   bot: 'Бот',
 };
 
-export const ChatsPage = ({ accounts, selectedAccountId }: ChatsPageProps) => {
+const iconByType: Record<ChatType, ComponentType<{ className?: string }>> = {
+  channel: Radio,
+  supergroup: UsersRound,
+  group: UsersRound,
+  user: UserRound,
+  bot: Bot,
+};
+
+const inCategory = (chat: ChatDialog, category: Category) => {
+  if (category === 'groups') return chat.type === 'group' || chat.type === 'supergroup';
+  if (category === 'channels') return chat.type === 'channel';
+  if (category === 'users') return chat.type === 'user' || chat.type === 'bot';
+  return true;
+};
+
+export const ChatsPage = ({ account }: ChatsPageProps) => {
   const [dialogs, setDialogs] = useState<ChatDialog[]>([]);
-  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [searchInput, setSearchInput] = useState('');
-  const [appliedSearch, setAppliedSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState<DialogFilter>('all');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<Category>('all');
 
   const fetchChats = useCallback(async () => {
-    if (!selectedAccountId) {
+    if (!account) {
       setDialogs([]);
-      setTotal(0);
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const response = await api.getDialogs({
-        account_id: selectedAccountId,
-        query: appliedSearch || undefined,
-        chat_type: typeFilter === 'all' ? undefined : typeFilter,
-      });
-      setDialogs(response.chats);
-      setTotal(response.total);
+      const result = await api.getDialogs();
+      setDialogs(result.chats);
     } catch (requestError) {
-      setError(getErrorMessage(requestError, 'Не удалось загрузить диалоги Telegram'));
+      setError(getErrorMessage(requestError, 'Не удалось загрузить чаты Telegram'));
     } finally {
       setLoading(false);
     }
-  }, [appliedSearch, selectedAccountId, typeFilter]);
+  }, [account]);
 
   useEffect(() => {
     void fetchChats();
   }, [fetchChats]);
 
-  const handleSearch = (event: FormEvent) => {
-    event.preventDefault();
-    setAppliedSearch(searchInput.trim());
-  };
-
-  const copyChatId = async (chatId: string) => {
-    try {
-      await navigator.clipboard.writeText(chatId);
-      setCopiedId(chatId);
-      window.setTimeout(() => setCopiedId((current) => (current === chatId ? null : current)), 2_000);
-    } catch {
-      setError('Браузер не разрешил доступ к буферу обмена. Скопируйте ID вручную.');
-    }
-  };
-
-  const selectedAccount = accounts.find((account) => account.id === selectedAccountId);
+  const filteredDialogs = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase('ru');
+    return dialogs.filter((chat) => {
+      if (!inCategory(chat, category)) return false;
+      if (!normalized) return true;
+      return `${chat.title} ${chat.username || ''}`.toLocaleLowerCase('ru').includes(normalized);
+    });
+  }, [category, dialogs, query]);
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            <MessageSquare className="w-6 h-6 text-[#24A1DE]" />
-            Диалоги и чаты
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">Каналы, группы и личные чаты выбранного MTProto‑аккаунта.</p>
-          {selectedAccount && <p className="text-xs text-[#24A1DE] mt-2">Аккаунт: {selectedAccount.first_name || selectedAccount.phone_number}</p>}
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-zinc-900"><MessageCircle className="h-6 w-6 text-[#2481CC]" /> Мои чаты</h1>
+          <p className="mt-1 text-sm text-zinc-500">Все группы, каналы и личные диалоги вашего Telegram.</p>
         </div>
-        <button type="button" onClick={() => void fetchChats()} disabled={loading || !selectedAccountId} className="flex items-center justify-center gap-2 px-4 py-2.5 bg-[#182533] hover:bg-[#242F3D] disabled:opacity-40 text-slate-200 border border-[#242F3D] rounded-xl text-sm font-medium transition-colors">
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Обновить список
-        </button>
+        <button type="button" onClick={() => void fetchChats()} disabled={loading || !account} className="flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm hover:bg-zinc-50 disabled:opacity-45"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Обновить</button>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
-        <form onSubmit={handleSearch} className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input type="search" placeholder="Название или @username…" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} disabled={!selectedAccountId} className="w-full bg-[#17212B] border border-[#242F3D] focus:border-[#24A1DE] disabled:opacity-50 rounded-xl pl-10 pr-24 py-2.5 text-sm text-white placeholder-slate-500 outline-none transition-colors" />
-          <button type="submit" disabled={!selectedAccountId} className="absolute right-1.5 top-1/2 -translate-y-1/2 px-3 py-1.5 bg-[#2B5278] hover:bg-[#35658f] disabled:opacity-40 rounded-lg text-xs text-white">Найти</button>
-        </form>
-        <div className="flex items-center gap-1 bg-[#17212B] border border-[#242F3D] p-1 rounded-xl overflow-x-auto">
-          {FILTERS.map((filter) => (
-            <button key={filter.id} type="button" onClick={() => setTypeFilter(filter.id)} disabled={!selectedAccountId} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap disabled:opacity-40 ${typeFilter === filter.id ? 'bg-[#24A1DE] text-white' : 'text-slate-400 hover:text-white hover:bg-[#182533]'}`}>
-              {filter.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
 
-      {error && <div role="alert" className="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-300 rounded-xl text-sm">{error}</div>}
-
-      {!selectedAccountId ? (
-        <div className="bg-[#17212B] border border-[#242F3D] rounded-2xl p-12 text-center text-slate-400">
-          <MessageSquare className="w-12 h-12 mx-auto mb-3 text-slate-600" />
-          <h2 className="text-base font-semibold text-white">Telegram‑аккаунт не подключён</h2>
-          <p className="text-sm mt-1">Подключите аккаунт, чтобы получить его диалоги.</p>
-        </div>
-      ) : loading && dialogs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-          <RefreshCw className="w-8 h-8 animate-spin mb-3 text-[#24A1DE]" />
-          <p className="text-sm">Получаем диалоги из Telegram…</p>
-        </div>
-      ) : dialogs.length === 0 ? (
-        <div className="bg-[#17212B] border border-[#242F3D] rounded-2xl p-12 text-center text-slate-400">
-          <MessageSquare className="w-12 h-12 mx-auto mb-3 text-slate-600" />
-          <h2 className="text-base font-semibold text-white">Чаты не найдены</h2>
-          <p className="text-sm mt-1">Измените поисковый запрос или фильтр типа.</p>
-        </div>
+      {!account ? (
+        <div className="rounded-2xl border border-zinc-200 bg-white px-6 py-14 text-center shadow-sm"><MessageCircle className="mx-auto h-12 w-12 text-zinc-300" /><h2 className="mt-3 text-lg font-bold text-zinc-900">Telegram ещё не подключён</h2><p className="mt-1 text-sm text-zinc-500">Войдите по номеру телефона, и ваши диалоги появятся здесь.</p></div>
       ) : (
         <>
-          <p className="text-xs text-slate-500">Найдено диалогов: {total}</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {dialogs.map((chat) => (
-              <article key={chat.id} className="bg-[#17212B] border border-[#242F3D] hover:border-[#2B5278] rounded-xl p-4 transition-colors flex flex-col justify-between shadow-sm">
-                <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#182533] border border-[#242F3D] flex items-center justify-center shrink-0 mt-0.5">{chatIcon(chat.type)}</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <h2 className="text-sm font-semibold text-white truncate" title={chat.title}>{chat.title}</h2>
-                      {chat.is_creator && <span className="text-[10px] bg-amber-500/20 text-amber-200 px-1.5 py-0.5 rounded font-medium">Владелец</span>}
-                      {chat.is_admin && !chat.is_creator && <span className="text-[10px] bg-sky-500/20 text-sky-200 px-1.5 py-0.5 rounded font-medium">Админ</span>}
-                      {chat.unread_count > 0 && <span className="text-[10px] bg-[#24A1DE] text-white px-1.5 py-0.5 rounded-full font-semibold">{chat.unread_count}</span>}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
-                      <span className="bg-[#182533] px-2 py-0.5 rounded text-[11px] text-slate-300 border border-[#242F3D]">{TYPE_LABELS[chat.type]}</span>
-                      {chat.username && <span className="text-[#24A1DE] truncate">@{chat.username}</span>}
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-3 pt-3 border-t border-[#242F3D] flex items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-1 text-slate-300 font-mono min-w-0">
-                    <Hash className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                    <span className="truncate" title={chat.id}>{chat.id}</span>
-                  </div>
-                  <button type="button" onClick={() => void copyChatId(chat.id)} className="flex items-center gap-1 px-2.5 py-1 bg-[#182533] hover:bg-[#24A1DE] hover:text-white text-slate-300 border border-[#242F3D] rounded-lg transition-colors shrink-0" title="Скопировать ID чата">
-                    {copiedId === chat.id ? <><Check className="w-3 h-3 text-emerald-400" /> Скопировано</> : <><Copy className="w-3 h-3" /> Копировать ID</>}
-                  </button>
-                </div>
-              </article>
-            ))}
+          <div className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm sm:p-4">
+            <div className="relative"><Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти чат или @username" className="w-full rounded-xl border border-zinc-200 bg-zinc-50 py-3 pl-10 pr-4 text-sm placeholder-zinc-400 focus:border-[#2481CC] focus:bg-white" /></div>
+            <div className="mt-3 flex gap-1 overflow-x-auto">{categories.map((item) => <button key={item.id} type="button" onClick={() => setCategory(item.id)} className={`whitespace-nowrap rounded-xl px-3.5 py-2 text-xs font-semibold ${category === item.id ? 'bg-[#2481CC] text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'}`}>{item.label}</button>)}</div>
           </div>
+
+          {loading && dialogs.length === 0 ? (
+            <div className="py-16 text-center text-sm text-zinc-500"><RefreshCw className="mx-auto mb-3 h-7 w-7 animate-spin text-[#2481CC]" />Получаем диалоги из Telegram…</div>
+          ) : filteredDialogs.length === 0 ? (
+            <div className="rounded-2xl border border-zinc-200 bg-white px-6 py-12 text-center text-sm text-zinc-500">По вашему запросу ничего не найдено.</div>
+          ) : (
+            <div>
+              <p className="mb-3 text-xs font-medium text-zinc-500">Показано чатов: {filteredDialogs.length}</p>
+              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                {filteredDialogs.map((chat) => {
+                  const Icon = iconByType[chat.type];
+                  return (
+                    <article key={chat.id} className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#E7F3FC] text-[#2481CC]"><Icon className="h-5 w-5" /></div>
+                      <div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h2 className="truncate text-sm font-bold text-zinc-900">{chat.title}</h2>{chat.unread_count > 0 && <span className="rounded-full bg-[#2481CC] px-1.5 py-0.5 text-[10px] font-bold text-white">{chat.unread_count}</span>}</div><div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-500"><span>{typeLabels[chat.type]}</span>{chat.username && <span className="text-[#2481CC]">@{chat.username}</span>}{chat.is_creator && <span className="rounded-md bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700">Владелец</span>}{chat.is_admin && !chat.is_creator && <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-700">Админ</span>}</div></div>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

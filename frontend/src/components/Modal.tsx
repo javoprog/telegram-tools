@@ -10,13 +10,7 @@ interface ModalProps {
   maxWidth?: string;
 }
 
-export const Modal = ({
-  isOpen,
-  onClose,
-  title,
-  children,
-  maxWidth = 'max-w-2xl',
-}: ModalProps) => {
+export const Modal = ({ isOpen, onClose, title, children, maxWidth = 'max-w-2xl' }: ModalProps) => {
   const titleId = useId();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
@@ -32,7 +26,6 @@ export const Modal = ({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onCloseRef.current();
     };
-
     document.body.style.overflow = 'hidden';
     window.addEventListener('keydown', handleKeyDown);
     requestAnimationFrame(() => closeButtonRef.current?.focus());
@@ -44,10 +37,9 @@ export const Modal = ({
   }, [isOpen]);
 
   if (!isOpen) return null;
-
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-y-auto bg-black/70 backdrop-blur-sm animate-backdrop-in"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-zinc-900/35 p-4 backdrop-blur-[2px] animate-backdrop-in"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -56,21 +48,21 @@ export const Modal = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`relative bg-[#17212B] border border-[#2B3745] rounded-2xl w-full ${maxWidth} shadow-2xl my-8 animate-modal-in`}
+        className={`my-8 w-full overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-2xl shadow-zinc-900/15 animate-modal-in ${maxWidth}`}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-[#242F3D] bg-[#17212B] rounded-t-2xl">
-          <h2 id={titleId} className="text-lg font-semibold text-white">{title}</h2>
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-zinc-200 bg-white px-5 py-4 sm:px-6">
+          <h2 id={titleId} className="text-lg font-bold text-zinc-900">{title}</h2>
           <button
             ref={closeButtonRef}
             type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-[#242F3D] transition-colors"
+            className="rounded-xl p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900"
             aria-label="Закрыть окно"
           >
-            <X className="w-5 h-5" />
+            <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="p-6">{children}</div>
+        <div className="p-5 sm:p-6">{children}</div>
       </div>
     </div>,
     document.body,

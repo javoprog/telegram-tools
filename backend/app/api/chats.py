@@ -3,7 +3,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import get_db
-from backend.app.core.security import get_current_user
 from backend.app.models.account import Account, AccountStatus
 from backend.app.schemas.chat import ChatDialog, ChatListResponse, ChatTypeFilter
 from backend.app.services.telegram_manager import TelegramManagerError, telegram_manager
@@ -13,31 +12,22 @@ router = APIRouter(prefix="/api/chats", tags=["Chats"])
 
 async def _active_account(
     db: AsyncSession,
-    account_id: int | None,
 ) -> Account:
-    if account_id is not None:
-        account = await db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Telegram account not found",
-            )
-    else:
-        result = await db.execute(
-            select(Account)
-            .where(
-                Account.status == AccountStatus.CONNECTED,
-                Account.is_active.is_(True),
-            )
-            .order_by(Account.id)
-            .limit(1)
+    result = await db.execute(
+        select(Account)
+        .where(
+            Account.status == AccountStatus.CONNECTED,
+            Account.is_active.is_(True),
         )
-        account = result.scalar_one_or_none()
-        if account is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No active Telegram account found",
-            )
+        .order_by(Account.id.desc())
+        .limit(1)
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active Telegram account found",
+        )
 
     if (
         account.status != AccountStatus.CONNECTED
@@ -53,13 +43,11 @@ async def _active_account(
 
 @router.get("/dialogs", response_model=ChatListResponse)
 async def get_dialogs(
-    account_id: int | None = Query(default=None, gt=0),
     query: str | None = Query(default=None, max_length=255),
     chat_type: ChatTypeFilter | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> ChatListResponse:
-    account = await _active_account(db, account_id)
+    account = await _active_account(db)
     client = telegram_manager.clients.get(account.id)
 
     try:

@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     # Secrets deliberately have no usable fallback values. validate_runtime() is
     # called by FastAPI lifespan so a misconfigured deployment fails closed.
     APP_SECRET_KEY: str = ""
-    ADMIN_PASSWORD: str = ""
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
 
     # These are application-level credentials. They are never accepted from an
     # HTTP request or stored per Telegram account.
@@ -54,8 +52,6 @@ class Settings(BaseSettings):
             missing.append("TG_API_HASH")
         if not self.APP_SECRET_KEY.strip():
             missing.append("APP_SECRET_KEY")
-        if not self.ADMIN_PASSWORD:
-            missing.append("ADMIN_PASSWORD")
         if missing:
             raise RuntimeError(
                 "Missing required environment variables: " + ", ".join(missing)

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +13,6 @@ from backend.app.api import (
     chats_router,
     logs_router,
     rules_router,
-    settings_router,
     ws_router,
 )
 from backend.app.core.config import settings
@@ -37,11 +35,25 @@ async def _restore_active_accounts() -> None:
                 Account.status == AccountStatus.CONNECTED,
                 Account.is_active.is_(True),
             )
-            .order_by(Account.id)
+            .order_by(Account.id.desc())
         )
         accounts = list(result.scalars().all())
-        missing_sessions = [account for account in accounts if not account.session_string]
-        for account in missing_sessions:
+        if not accounts:
+            return
+
+        account, *duplicates = accounts
+        for duplicate in duplicates:
+            duplicate.status = AccountStatus.DISCONNECTED
+            duplicate.is_active = False
+            duplicate.phone_code_hash = None
+        if duplicates:
+            logger.warning(
+                "Single-account mode disabled %s older active account(s)",
+                len(duplicates),
+            )
+            await db.commit()
+
+        if not account.session_string:
             logger.error(
                 "Active Telegram account %s (ID %s) has no stored session",
                 account.phone_number,
@@ -49,48 +61,21 @@ async def _restore_active_accounts() -> None:
             )
             account.status = AccountStatus.ERROR
             account.is_active = False
-        if missing_sessions:
             await db.commit()
-
-        sessions = [
-            (account.id, account.phone_number, account.session_string)
-            for account in accounts
-            if account.session_string
-        ]
-
-        if not sessions:
             return
 
-        logger.info("Restoring %s active Telegram account(s)", len(sessions))
-        restored = await asyncio.gather(
-            *(
-                telegram_manager.start_client_session(account_id, encrypted_session)
-                for account_id, _phone, encrypted_session in sessions
-            ),
-            return_exceptions=True,
-        )
-
-        changed = False
-        for (account_id, phone_number, _session), outcome in zip(sessions, restored):
-            if isinstance(outcome, Exception):
-                logger.error(
-                    "Could not restore Telegram account %s (ID %s): %s",
-                    phone_number,
-                    account_id,
-                    outcome,
-                )
-                account = await db.get(Account, account_id)
-                if account is not None:
-                    account.status = AccountStatus.ERROR
-                    account.is_active = False
-                    changed = True
-            else:
-                logger.info(
-                    "Telegram account %s (ID %s) restored",
-                    phone_number,
-                    account_id,
-                )
-        if changed:
+        logger.info("Restoring Telegram account %s", account.phone_number)
+        try:
+            await telegram_manager.start_client_session(account.id, account.session_string)
+        except Exception as exc:
+            logger.error(
+                "Could not restore Telegram account %s (ID %s): %s",
+                account.phone_number,
+                account.id,
+                exc,
+            )
+            account.status = AccountStatus.ERROR
+            account.is_active = False
             await db.commit()
 
 
@@ -126,7 +111,6 @@ app.include_router(auth_router)
 app.include_router(chats_router)
 app.include_router(rules_router)
 app.include_router(logs_router)
-app.include_router(settings_router)
 app.include_router(ws_router)
 
 frontend_paths = [

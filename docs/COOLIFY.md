@@ -18,8 +18,8 @@ Create a persistent volume with these values:
 | Volume name | `tg_data` |
 | Mount path | `/app/data` |
 
-Do not deploy SQLite without this volume: Telegram sessions, rules, logs and
-the bcrypt override for the panel password are stored under `/app/data`.
+Do not deploy SQLite without this volume: encrypted Telegram sessions, rules
+and logs are stored under `/app/data`.
 
 ## 3. Configure environment variables
 
@@ -28,7 +28,6 @@ Add these variables in Coolify:
     TG_API_ID=<telegram application api id>
     TG_API_HASH=<telegram application api hash>
     APP_SECRET_KEY=<random secret, at least 32 bytes>
-    ADMIN_PASSWORD=<initial web panel password>
     PORT=8000
     DATA_DIR=/app/data
     DATABASE_URL=sqlite+aiosqlite:////app/data/app.db
@@ -38,6 +37,9 @@ Generate the application secret locally, for example:
     python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Never commit real values to `.env` or to this repository.
+
+The dashboard intentionally has no application-level password. If the public
+URL must be restricted, enable authentication in Coolify's proxy layer.
 
 ## 4. Enable automatic deployment
 

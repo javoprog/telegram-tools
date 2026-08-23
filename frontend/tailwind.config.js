@@ -8,12 +8,12 @@ export default {
     extend: {
       colors: {
         telegram: {
-          blue: '#24A1DE',
-          dark: '#17212B',
-          light: '#2B5278',
-          bg: '#0E1621',
-          card: '#182533',
-          border: '#242F3D'
+          blue: '#2481CC',
+          hover: '#1C72B8',
+          soft: '#E7F3FC',
+          bg: '#F0F2F5',
+          card: '#FFFFFF',
+          border: '#E4E4E7'
         }
       }
     },

@@ -2,13 +2,12 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import get_db
-from backend.app.core.security import get_current_user
 from backend.app.models.account import Account, AccountStatus
 from backend.app.models.rule import Rule
 from backend.app.schemas.rule import RuleBase, RuleCreate, RuleResponse, RuleUpdate
@@ -86,28 +85,46 @@ def _apply_rule_data(rule: Rule, data: RuleBase) -> None:
     rule.cooldown_seconds = data.cooldown_seconds
 
 
-async def _default_account_id(db: AsyncSession) -> int | None:
+async def _active_account_id(db: AsyncSession) -> int | None:
     result = await db.execute(
         select(Account.id)
         .where(
             Account.status == AccountStatus.CONNECTED,
             Account.is_active.is_(True),
         )
-        .order_by(Account.id)
+        .order_by(Account.id.desc())
         .limit(1)
     )
     return result.scalar_one_or_none()
 
 
+async def _active_rule(db: AsyncSession, rule_id: int) -> Rule:
+    account_id = await _active_account_id(db)
+    if account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Connect a Telegram account first",
+        )
+    result = await db.execute(
+        select(Rule).where(Rule.id == rule_id, Rule.account_id == account_id)
+    )
+    rule = result.scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rule not found",
+        )
+    return rule
+
+
 @router.get("/", response_model=list[RuleResponse])
 async def list_rules(
-    account_id: int | None = Query(default=None, gt=0),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> list[RuleResponse]:
-    statement = select(Rule)
-    if account_id is not None:
-        statement = statement.where(Rule.account_id == account_id)
+    account_id = await _active_account_id(db)
+    if account_id is None:
+        return []
+    statement = select(Rule).where(Rule.account_id == account_id)
     result = await db.execute(statement.order_by(Rule.id.desc()))
     return [_serialize_rule(rule) for rule in result.scalars().all()]
 
@@ -116,20 +133,13 @@ async def list_rules(
 async def create_rule(
     request: RuleCreate,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> RuleResponse:
-    account_id = request.account_id or await _default_account_id(db)
+    account_id = await _active_account_id(db)
     if account_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A Telegram account is required",
         )
-    if await db.get(Account, account_id) is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Telegram account not found",
-        )
-
     rule = Rule(account_id=account_id, name=request.name)
     _apply_rule_data(rule, request)
     db.add(rule)
@@ -142,14 +152,8 @@ async def create_rule(
 async def get_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> RuleResponse:
-    rule = await db.get(Rule, rule_id)
-    if rule is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Rule not found",
-        )
+    rule = await _active_rule(db, rule_id)
     return _serialize_rule(rule)
 
 
@@ -158,14 +162,8 @@ async def update_rule(
     rule_id: int,
     request: RuleUpdate,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> RuleResponse:
-    rule = await db.get(Rule, rule_id)
-    if rule is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Rule not found",
-        )
+    rule = await _active_rule(db, rule_id)
 
     _apply_rule_data(rule, _validated_rule_update(rule, request))
     rule.updated_at = datetime.now(timezone.utc)
@@ -178,14 +176,8 @@ async def update_rule(
 async def toggle_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> RuleResponse:
-    rule = await db.get(Rule, rule_id)
-    if rule is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Rule not found",
-        )
+    rule = await _active_rule(db, rule_id)
     rule.is_active = not rule.is_active
     rule.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -197,14 +189,8 @@ async def toggle_rule(
 async def delete_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(get_current_user),
 ) -> dict[str, str | int]:
-    rule = await db.get(Rule, rule_id)
-    if rule is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Rule not found",
-        )
+    rule = await _active_rule(db, rule_id)
     await db.delete(rule)
     await db.commit()
     return {"status": "deleted", "id": rule_id}

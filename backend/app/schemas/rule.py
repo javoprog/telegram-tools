@@ -127,7 +127,7 @@ class RuleBase(BaseModel):
 
 
 class RuleCreate(RuleBase):
-    account_id: int | None = Field(default=None, gt=0)
+    pass
 
 
 class RuleUpdate(BaseModel):
