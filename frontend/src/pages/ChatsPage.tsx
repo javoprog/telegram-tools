@@ -47,7 +47,7 @@ export const ChatsPage = ({ account }: ChatsPageProps) => {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<Category>('all');
 
-  const fetchChats = useCallback(async () => {
+  const fetchChats = useCallback(async (refresh = false) => {
     if (!account) {
       setDialogs([]);
       return;
@@ -55,7 +55,7 @@ export const ChatsPage = ({ account }: ChatsPageProps) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.getDialogs();
+      const result = await api.getDialogs({ refresh });
       setDialogs(result.chats);
     } catch (requestError) {
       setError(getErrorMessage(requestError, 'Не удалось загрузить чаты Telegram'));
@@ -84,7 +84,7 @@ export const ChatsPage = ({ account }: ChatsPageProps) => {
           <h1 className="flex items-center gap-2 text-2xl font-bold text-zinc-900"><MessageCircle className="h-6 w-6 text-[#2481CC]" /> Мои чаты</h1>
           <p className="mt-1 text-sm text-zinc-500">Все группы, каналы и личные диалоги вашего Telegram.</p>
         </div>
-        <button type="button" onClick={() => void fetchChats()} disabled={loading || !account} className="flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm hover:bg-zinc-50 disabled:opacity-45"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Обновить</button>
+        <button type="button" onClick={() => void fetchChats(true)} disabled={loading || !account} className="flex items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-2.5 text-sm font-semibold text-zinc-700 shadow-sm hover:bg-zinc-50 disabled:opacity-45"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Обновить</button>
       </div>
 
       {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}

@@ -45,6 +45,7 @@ async def _active_account(
 async def get_dialogs(
     query: str | None = Query(default=None, max_length=255),
     chat_type: ChatTypeFilter | None = Query(default=None),
+    refresh: bool = Query(default=False, description="Bypass the dialog cache"),
     db: AsyncSession = Depends(get_db),
 ) -> ChatListResponse:
     account = await _active_account(db)
@@ -56,7 +57,7 @@ async def get_dialogs(
                 account_id=account.id,
                 session_encrypted=account.session_string,
             )
-        dialogs = await telegram_manager.get_dialogs(account.id)
+        dialogs = await telegram_manager.get_dialogs(account.id, force_refresh=refresh)
     except TelegramManagerError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
