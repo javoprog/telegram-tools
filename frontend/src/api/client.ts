@@ -89,8 +89,10 @@ export const api = {
       method: 'POST',
     }),
 
-  getDialogs: (params: { query?: string; chat_type?: ChatTypeFilter } = {}) =>
-    request<{ total: number; chats: ChatDialog[] }>(withQuery('/chats/dialogs', params)),
+  getDialogs: ({ refresh, ...params }: { query?: string; chat_type?: ChatTypeFilter; refresh?: boolean } = {}) =>
+    request<{ total: number; chats: ChatDialog[] }>(
+      withQuery('/chats/dialogs', { ...params, refresh: refresh ? 'true' : undefined }),
+    ),
 
   getRules: () => request<Rule[]>('/rules/'),
   getRule: (id: number) => request<Rule>(`/rules/${id}`),

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     DATA_DIR: str = "/app/data"
     DATABASE_URL: str = "sqlite+aiosqlite:////app/data/app.db"
 
+    # How long the chat (dialog) list is cached per account. Loading every
+    # dialog triggers Telegram GetDialogsRequest flood waits on large accounts.
+    # 0 disables the cache.
+    DIALOGS_CACHE_TTL_SECONDS: int = 600
+
     @property
     def data_path(self) -> Path:
         return Path(self.DATA_DIR).expanduser().resolve()
